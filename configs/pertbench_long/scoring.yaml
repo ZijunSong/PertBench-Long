@@ -1,0 +1,6 @@
+metric: direction_score
+label_profile: effect_proxy_v1
+tau: 0.10
+effect_unit: log1p_mean_diff
+probability_tolerance: 1.0e-6
+aubc: unit_cost_v1

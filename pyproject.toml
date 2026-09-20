@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pertbench-long"
+version = "0.1.0"
+description = "Retrospective experimental-replay benchmark for long-horizon scientific agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "PertBench-Long" }]
+keywords = ["single-cell", "perturbation", "agent", "benchmark"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+data = ["anndata", "scipy", "h5py", "pyarrow"]
+dev = ["pytest", "anndata", "scipy", "h5py", "pyarrow"]
+agent = ["httpx"]
+
+[project.scripts]
+pertbench-long = "pertbench_long.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pertbench_long*"]
+
+[tool.setuptools.package-data]
+pertbench_long = ["schemas/jsonschema/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

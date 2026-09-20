@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pertbench-long.local/schemas/public_episode.schema.json",
+  "title": "PublicEpisodeSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "episode_id",
+    "protocol",
+    "protocol_version",
+    "label_profile",
+    "objective",
+    "initial_evidence",
+    "reference_evidence",
+    "candidate_experiments",
+    "targets",
+    "target_control_available",
+    "gene_universe_artifact",
+    "experimental_budget",
+    "cost_unit",
+    "resource_profile",
+    "data_release_id",
+    "public_split_fingerprint",
+    "public_scoring_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "episode_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protocol": {
+      "type": "string"
+    },
+    "protocol_version": {
+      "type": "string"
+    },
+    "label_profile": {
+      "enum": [
+        "effect_proxy_v1",
+        "replicate_de_v1"
+      ]
+    },
+    "objective": {
+      "type": "string"
+    },
+    "initial_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "reference_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "candidate_experiments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "experiment_id",
+          "cell_type",
+          "perturbation"
+        ],
+        "properties": {
+          "experiment_id": {
+            "type": "string"
+          },
+          "cell_type": {
+            "type": "string"
+          },
+          "perturbation": {
+            "type": "string"
+          },
+          "cost": {
+            "type": "integer",
+            "const": 1
+          },
+          "dose": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dose_unit": {
+            "type": "string"
+          },
+          "time": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "time_unit": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "target_id",
+          "cell_type",
+          "perturbation"
+        ],
+        "properties": {
+          "target_id": {
+            "type": "string"
+          },
+          "cell_type": {
+            "type": "string"
+          },
+          "perturbation": {
+            "type": "string"
+          },
+          "dose": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "dose_unit": {
+            "type": "string"
+          },
+          "time": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "time_unit": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "target_control_available": {
+      "type": "boolean"
+    },
+    "gene_universe_artifact": {
+      "type": "string"
+    },
+    "experimental_budget": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cost_unit": {
+      "enum": [
+        "credit"
+      ]
+    },
+    "resource_profile": {
+      "type": [
+        "string",
+        "object"
+      ]
+    },
+    "data_release_id": {
+      "type": "string"
+    },
+    "public_split_fingerprint": {
+      "type": "string"
+    },
+    "public_scoring_fingerprint": {
+      "type": "string"
+    },
+    "reference_policy": {
+      "type": "string"
+    },
+    "gene_panel_policy": {
+      "type": "string"
+    },
+    "canonical_units": {
+      "type": "object"
+    },
+    "artifact_metadata": {
+      "type": "object"
+    },
+    "related_family": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "synthetic": {
+      "type": "boolean"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

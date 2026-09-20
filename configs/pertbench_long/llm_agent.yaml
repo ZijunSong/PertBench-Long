@@ -1,0 +1,11 @@
+agent: llm
+mode: isolated_eval
+public_dir: runs/episodes/synthetic_pilot_001/public
+private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+agent_kwargs:
+  model: unspecified
+  endpoint: null
+  temperature: 0.0
+  max_tokens: 2048
+  api_key_env: PERTBENCH_LONG_API_KEY
+note: adapter implemented, live run unverified without credentials

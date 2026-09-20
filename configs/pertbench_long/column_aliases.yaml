@@ -1,0 +1,10 @@
+column_aliases:
+  Cell.Type: cell_type
+  perturbation_status: perturbation
+  dose_value: dose
+  treatment_time: time
+cell_type_aliases:
+  CD4 T: CD4T
+  CD8 T: CD8T
+  B cells: B
+  NK cells: NK

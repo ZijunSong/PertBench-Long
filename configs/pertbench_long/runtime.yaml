@@ -1,0 +1,9 @@
+profile: cpu_pilot_v1
+cpu: 2
+memory_gib: 8
+workspace_gib: 1
+tool_timeout_s: 60
+episode_timeout_s: 600
+max_external_tool_calls: 80
+max_generation_tokens: 32000
+max_output_bytes: 52428800

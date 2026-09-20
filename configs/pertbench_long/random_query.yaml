@@ -1,0 +1,8 @@
+agent: random_query
+mode: local_trusted_debug
+public_dir: runs/episodes/synthetic_pilot_001/public
+private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+agent_kwargs:
+  seed: 0
+  sigma: 0.15
+note: sigma is uncalibrated on this synthetic fixture

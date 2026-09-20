@@ -1,0 +1,6 @@
+agent: control_similarity_query
+mode: local_trusted_debug
+public_dir: runs/episodes/synthetic_pilot_001/public
+private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+agent_kwargs:
+  sigma: 0.15

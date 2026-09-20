@@ -1,0 +1,11 @@
+fixture: pbmc
+study: kang_pbmc_ifn_public
+data_release_id: local_kang_csv
+pbmc_csv_dir: /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
+o_types: [CD4T, CD8T]
+q_types: [CD14+Mono, Dendritic, FCGR3A+Mono]
+t_types: [B, NK]
+n_panel: 64
+experimental_budget: 2
+protocol: within_study_celltype_ood_v1
+label_profile: effect_proxy_v1

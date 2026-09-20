@@ -1,0 +1,15 @@
+study: kang_pbmc_ifn_public
+data_release_id: local_kang_csv
+pbmc_csv_dir: /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
+moa_root: /data/ppnm/data/PertDiffBench/data_ori/fig2/task1_unseenMOA
+temporal_root: /data/ppnm/data/PertDiffBench/data_ori/fig4
+roots:
+  - /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
+  - /data/ppnm/data/PertDiffBench/data_ori/fig1/raw_task1
+  - /data/ppnm/data/PertDiffBench/data_ori/fig4
+column_aliases:
+  Cell.Type: cell_type
+  perturbation_status: perturbation
+notes:
+  - donor metadata is absent in these files and recorded as null
+  - values look like log1p, not raw counts; effect_proxy_v1 will not re-apply count normalization

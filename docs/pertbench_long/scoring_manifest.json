@@ -1,0 +1,8 @@
+{
+  "metric": "direction_score",
+  "label_profile": "effect_proxy_v1",
+  "tau": 0.1,
+  "effect_unit": "log1p_mean_diff",
+  "aubc": "unit_cost_v1",
+  "probability_tolerance": 1e-06
+}
