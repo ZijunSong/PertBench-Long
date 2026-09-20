@@ -1,6 +1,7 @@
-# A01–A20 修订状态（相对审计 commit `89d6961`）
+# A01–A20 / B01–B11 修订状态
 
 日期：2026-09-20。本文件记录每条审计要求对应的代码、测试命令、结果和**未验证**项。  
+A 轮相对 `89d6961`；B 轮相对第二轮复审基线 `b7cfeac`。  
 不要把“接口存在”“检测到 Docker”“无密钥时报错”写成“模型接入完成”。
 
 测试命令：
@@ -9,7 +10,7 @@
 /data/ppnm/miniconda3/envs/pertdiffbench/bin/python -m pytest tests/pertbench_long -q
 ```
 
-本轮在该环境结果：**passed + 1 skipped**（`test_v32_live_model_unverified` 显式 skip）。未重跑真实 PBMC 全量 baseline，也未调用付费 API 或本机 GPU 服务。
+本轮（B01–B11）在该环境结果：**56 passed, 3 skipped**（live 模型 ×2、Docker 隔离实跑 ×1 显式 skip）。未重跑真实 PBMC 全量 baseline，也未调用付费 API 或本机 GPU 服务，也未做真实容器边界验收。
 
 ---
 
@@ -136,10 +137,10 @@
 - 测试：本环境 pytest passed；**未**在空白 venv 从 wheel 安装验收
 - 未验证：全新机器干净安装
 
-## A18 · 回归测试 — 已实现核心 E01–E16
+## A18 · 回归测试 — 已实现核心 E01–E16，B 轮已补异常路径
 
-- 文件：`tests/pertbench_long/test_review_regressions.py` 及更新后的 T06/T07/T10/T16/T20
-- 结果：本环境 46 passed / 1 skipped（live 模型 V32）
+- 文件：`tests/pertbench_long/test_review_regressions.py`、`test_second_review.py`
+- 结果：本环境 **56 passed / 3 skipped**（live 模型、Docker 实跑）
 - 未验证：CI 分栏（CPU / mock-HTTP / Docker / live）尚未建 GitHub Actions
 
 ## A19 · suite 配置 — 接口已落地，未跑真实模型组
@@ -152,6 +153,86 @@
 - 旧 PBMC `|ΔS|≲0.005` 表仍是未知处理历史上的 exploratory 记录，本轮修复后**没有**重新生成可信 official 表
 - 不把 seed/prompt 当独立生物任务；不把转录预测称为机制发现
 - 未实现湿实验、RL、多 Agent、新生物预测器
+
+---
+
+## B01 · FAILED 请求不可免费重放 — 已实现（mock 注入）
+
+- 文件：`oracle/ledger.py` `authorize`/`fail_and_refund`/`mark_*`；`oracle/service.py`
+- 根因：同 request_id 的 FAILED 行被当成 replay，staging 失败退款后可零费用交付
+- 行为：FAILED 同 ID 永久 `FAILED_REQUEST`，须新 ID；`fail_and_refund` 幂等；禁止 FAILED→MATERIALIZED/DELIVERED
+- 测试：`test_b01_failed_request_same_id_does_not_free_reveal`
+- 未验证：真实进程在 mark_delivered 前被 SIGKILL 的 OS 级恢复
+
+## B02 · resume 恢复原状态 — 已实现（工程路径）
+
+- 文件：`runtime/runner.py` `_prepare`；`runtime/broker.py` `restore_from_ledger`；`cli.py` `_cmd_resume`
+- 根因：resume 重写 manifest、evidence_version=0、已购未注册
+- 行为：校验原 binding/config；从账本恢复 registry 与 version；不覆盖原 manifest；SUBMITTED 拒绝
+- 测试：`test_b02_resume_restores_purchase_and_refuses_submitted`
+- 未验证：真实 LLM 对话逐 token 恢复（明确不保证）
+
+## B03 · isolation_qualified 不是类常量 — 已实现逻辑，Docker 实跑未验证
+
+- 文件：`runtime/executor.py` `isolation_is_qualified`、`DockerPythonExecutor`
+- 根因：`isolation_qualified = True` 写在类上，浮动 tag 即可合格
+- 行为：实例默认 false；须 inspect digest 且匹配 `runtime.isolation_attestation.digest`；命名容器，超时 kill/rm
+- 测试：`test_b03_isolation_qualified_requires_matching_digest`；`test_b11_docker_isolation_live_unverified` **skip**
+- 未验证：真实 Docker 读 private/密钥/联网失败、超时后容器已停止、磁盘限额
+
+## B04 · /workspace 路径契约与 gene 挂载 — 已实现（debug 映射）
+
+- 文件：`runtime/broker.py` `map_agent_path`；executor 只读挂载 genes/contract
+- 根因：提示用 `/workspace`，submit 走宿主 PathGuard 被拒；漏挂 gene universe
+- 测试：`test_b04_workspace_virtual_path_is_accepted`；B08 用 `/workspace/outputs/...` 提交
+- 未验证：真实容器内读 genes 再写 parquet 的 OS 级验收
+
+## B05 · deadline/token/tool 限制在执行中生效 — 已实现（mock）
+
+- 文件：`runtime/budget.py`；broker `get_budget` 计数；loop/client 在每次模型/工具前 check
+- 根因：deadline 只在 agent 返回后检查；get_budget 不计工具次数；LLMAdapter 未传 deadline
+- 测试：`test_b05_deadline_stops_get_budget`
+- 未验证：无限 Python 在真实 Docker 中被 kill；provider 缺 usage 时的严格 token cap 实跑
+
+## B06 · resolved config 装配到 loop/client — 已实现
+
+- 文件：`runtime/config.py` `first_defined`/`resolve_run_config`；cli/suite/llm/client
+- 根因：`or 60` 吞掉 0；嵌套 model 时丢顶层 seed；suite 不走同一解析函数
+- 测试：`test_b06_seed_and_max_steps_reach_client_and_loop`
+- 未验证：真实服务忽略 seed 时的 sampling 固定（记录 seed_status=unsupported/sent）
+
+## B07 · TransportError 不计科学零分 — 已实现
+
+- 文件：`runtime/runner.py` 单独捕获 `TransportError`；`score_run` 对 infra 保持 null
+- 根因：401 落入 `PertBenchLongError` → `agent_tool_failure` → direction_score=0
+- 测试：`test_b07_http_401_is_infra_not_science_zero`
+- 未验证：真实 429 后成功、5xx 耗尽的付费 API
+
+## B08 · 公开提交契约与 tool result 补齐 — 已实现（mock）
+
+- 文件：`evaluation/contract.py`；builder 写入 `submission_contract.json`；loop/tools/doctor-model
+- 根因：prompt 无列约束；json_action 只有名字；畸形 native 参数不回 tool result
+- 测试：`test_b08_malformed_native_args_still_return_tool_result`
+- 未验证：真实模型只靠公开契约、无测试硬编码 parquet 的首次合法提交
+
+## B09 · 白名单 + 绑定 hash 预检 — 已实现
+
+- 文件：`runtime/release.py` `check_release`/`copy_declared_public_inputs`；validate 与 run 共用
+- 根因：`glob('*.h5ad')` 复制未声明 Q；validate 不比对绑定 hash
+- 测试：`test_b09_extra_and_tampered_public_artifacts_rejected`
+- 未验证：用户手改 private.public 与 public 两边 hash 后另立 episode 身份（那是新包，不是绕过）
+
+## B10 · suite 分组保留轨道/预算/失败归属 — 已实现
+
+- 文件：`evaluation/suite.py`；`cli.py` summarize；outcomes 默认 group_by 含 track/synthetic/budget
+- 测试：`test_b10_suite_does_not_pool_incompatible_tracks`
+- 未验证：真实两模型 × 两 policy × 多种子付费矩阵
+
+## B11 · 真实接入验收 — 未完成，测试诚实 skip
+
+- 文件：`tests/pertbench_long/test_second_review.py` skip；本文未验证表
+- 去掉 E16 永真断言
+- 未验证：干净 venv 安装、真实本地 openai-compatible 全 episode、真实远端 API、PBMC official
 
 ---
 

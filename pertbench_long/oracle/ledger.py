@@ -178,6 +178,13 @@ class Ledger:
                 if existing_req["payload_hash"] != payload_hash:
                     conn.execute("ROLLBACK")
                     return {"error": "IDEMPOTENCY_CONFLICT"}
+                phase = existing_req["purchase_phase"]
+                if phase == PHASE_FAILED:
+                    conn.execute("ROLLBACK")
+                    return {
+                        "error": "FAILED_REQUEST",
+                        "message": "request_id previously failed and was refunded; retry with a new request_id",
+                    }
                 conn.execute("COMMIT")
                 artifact = json.loads(existing_req["artifact_json"]) if existing_req["artifact_json"] else {}
                 return {
@@ -187,7 +194,7 @@ class Ledger:
                     "remaining": int(run["budget"]) - int(run["charged"]),
                     "evidence_version": int(existing_req["evidence_version"]),
                     "artifact": artifact,
-                    "purchase_phase": existing_req["purchase_phase"],
+                    "purchase_phase": phase,
                     "source_sha256": existing_req["source_sha256"],
                     "staging_name": existing_req["staging_name"],
                     "experiment_id": existing_req["experiment_id"],
@@ -259,6 +266,19 @@ class Ledger:
             if req is None:
                 conn.execute("ROLLBACK")
                 raise KeyError(request_id)
+            if req["purchase_phase"] == PHASE_FAILED:
+                conn.execute("ROLLBACK")
+                raise KeyError("cannot materialize a FAILED request")
+            if req["purchase_phase"] not in {PHASE_AUTHORIZED, PHASE_MATERIALIZED}:
+                conn.execute("ROLLBACK")
+                raise KeyError(f"illegal phase {req['purchase_phase']} for materialize")
+            owned = conn.execute(
+                "SELECT * FROM purchases WHERE run_id=? AND experiment_id=?",
+                (run_id, req["experiment_id"]),
+            ).fetchone()
+            if owned is None:
+                conn.execute("ROLLBACK")
+                raise KeyError("purchase row missing; refuse to reveal")
             conn.execute(
                 "UPDATE requests SET purchase_phase=?, artifact_json=? WHERE run_id=? AND request_id=?",
                 (PHASE_MATERIALIZED, artifact_json, run_id, request_id),
@@ -279,6 +299,19 @@ class Ledger:
             if req is None:
                 conn.execute("ROLLBACK")
                 raise KeyError(request_id)
+            if req["purchase_phase"] == PHASE_FAILED:
+                conn.execute("ROLLBACK")
+                raise KeyError("cannot deliver a FAILED request")
+            if req["purchase_phase"] not in {PHASE_MATERIALIZED, PHASE_DELIVERED}:
+                conn.execute("ROLLBACK")
+                raise KeyError(f"illegal phase {req['purchase_phase']} for deliver")
+            owned = conn.execute(
+                "SELECT * FROM purchases WHERE run_id=? AND experiment_id=?",
+                (run_id, req["experiment_id"]),
+            ).fetchone()
+            if owned is None:
+                conn.execute("ROLLBACK")
+                raise KeyError("purchase row missing; refuse to reveal")
             conn.execute(
                 "UPDATE requests SET purchase_phase=? WHERE run_id=? AND request_id=?",
                 (PHASE_DELIVERED, run_id, request_id),
@@ -295,7 +328,7 @@ class Ledger:
             }
 
     def fail_and_refund(self, run_id: str, request_id: str) -> None:
-        """Refund only if the request never reached MATERIALIZED/DELIVERED."""
+        """Refund at most once, and only if the request never reached MATERIALIZED/DELIVERED."""
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             req = conn.execute(
@@ -306,6 +339,9 @@ class Ledger:
                 conn.execute("COMMIT")
                 return
             phase = req["purchase_phase"]
+            if phase == PHASE_FAILED:
+                conn.execute("COMMIT")
+                return
             if phase in {PHASE_MATERIALIZED, PHASE_DELIVERED}:
                 conn.execute("COMMIT")
                 return

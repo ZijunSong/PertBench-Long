@@ -64,11 +64,15 @@ pertbench-long validate --manifest runs/episodes/pbmc_pilot_001/private/manifest
 | `local_trusted_debug` | 宿主 subprocess 跑分析代码。永远 `isolation_qualified=false`。 |
 | `isolated_eval` | 要求 Docker 分析镜像；无 Docker / 无镜像则拒绝，不回落到 debug 还声称隔离。模型 client 可留在宿主，**模型生成的 Python 必须进容器**。 |
 
-配方：`docker/analysis.Dockerfile`。固定 digest 与“读 private/密钥/联网失败”的验收在本环境**未验证**。
+配方：`docker/analysis.Dockerfile`。`isolation_qualified` 只有在镜像 digest 与 `runtime.isolation_attestation.digest` 一致时才为 true，**不是** executor 类常量。本环境未做真实容器边界验收。
+
+`resume` 会从账本恢复已购证据与 evidence_version，并拒绝已 SUBMITTED 的 run；不会覆盖原始 `run_manifest.json`。
+
+HTTP 401/403/连接失败记为 `infra_error`，科学分为 null，不进模型零分。
 
 ## 文档
 
-- [review_fix_status.md](docs/pertbench_long/review_fix_status.md) — A01–A20 逐条状态
+- [review_fix_status.md](docs/pertbench_long/review_fix_status.md) — A01–A20 与 B01–B11 逐条状态
 - [implementation_status.md](docs/pertbench_long/implementation_status.md)
 - [dataset_card_pbmc.md](docs/pertbench_long/dataset_card_pbmc.md)
 - [known_limitations.md](docs/pertbench_long/known_limitations.md)

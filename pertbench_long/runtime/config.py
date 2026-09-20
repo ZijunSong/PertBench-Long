@@ -1,0 +1,82 @@
+"""Shared run-config resolution. Explicit CLI > YAML > documented defaults. None is not 0."""
+
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from pertbench_long.errors import ConfigError
+
+
+def first_defined(*values: Any, default: Any = None) -> Any:
+    """Return the first value that is not None. 0 and False are kept."""
+    for value in values:
+        if value is not None:
+            return value
+    return default
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def resolve_run_config(
+    *,
+    cli: Mapping[str, Any] | None = None,
+    yaml_cfg: Mapping[str, Any] | None = None,
+    documented: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the config object that run/resume/suite must actually consume."""
+    cli = _as_mapping(cli)
+    yaml_cfg = _as_mapping(yaml_cfg)
+    documented = _as_mapping(documented)
+    runtime = {
+        **_as_mapping(documented.get("runtime")),
+        **_as_mapping(yaml_cfg.get("runtime")),
+        **_as_mapping(cli.get("runtime")),
+    }
+    evaluation = {
+        **_as_mapping(documented.get("evaluation")),
+        **_as_mapping(yaml_cfg.get("evaluation")),
+        **_as_mapping(cli.get("evaluation")),
+    }
+    model = yaml_cfg.get("model")
+    if cli.get("model") is not None:
+        model = cli.get("model")
+    seed = first_defined(cli.get("seed"), yaml_cfg.get("seed"), evaluation.get("seed"), documented.get("seed"))
+    resolved = {
+        "mode": first_defined(cli.get("mode"), yaml_cfg.get("mode"), documented.get("mode")),
+        "agent": first_defined(cli.get("agent"), yaml_cfg.get("agent"), documented.get("agent")),
+        "public_dir": first_defined(cli.get("public_dir"), yaml_cfg.get("public_dir"), documented.get("public_dir")),
+        "private_manifest": first_defined(cli.get("private_manifest"), yaml_cfg.get("private_manifest"), documented.get("private_manifest")),
+        "output": first_defined(cli.get("output"), yaml_cfg.get("output"), documented.get("output")),
+        "model": model,
+        "runtime": runtime,
+        "evaluation": evaluation,
+        "seed": seed,
+        "allow_unqualified": bool(first_defined(cli.get("allow_unqualified"), yaml_cfg.get("allow_unqualified"), evaluation.get("allow_unqualified"), False)),
+        "priority": "explicit_cli > yaml > documented_defaults",
+        "unsupported_noted": [],
+    }
+    if resolved["mode"] is None:
+        raise ConfigError("mode is required (explicit CLI or YAML)")
+    if resolved["public_dir"] is None or resolved["private_manifest"] is None:
+        raise ConfigError("public_dir and private_manifest are required")
+    return resolved
+
+
+def agent_kwargs_from_resolved(resolved: Mapping[str, Any], *, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    kwargs = dict(extra or {})
+    model = resolved.get("model")
+    if isinstance(model, dict):
+        kwargs = {**model, **kwargs, "model": model}
+    elif model is not None:
+        kwargs["model"] = model
+    if resolved.get("seed") is not None:
+        kwargs["seed"] = resolved["seed"]
+    kwargs["runtime"] = dict(resolved.get("runtime") or {})
+    kwargs["evaluation"] = dict(resolved.get("evaluation") or {})
+    kwargs["max_agent_steps"] = first_defined(
+        kwargs.get("max_agent_steps"),
+        (resolved.get("runtime") or {}).get("max_agent_steps"),
+    )
+    return kwargs

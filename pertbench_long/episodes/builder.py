@@ -181,6 +181,11 @@ def build_episode_from_store(
 
     gene_path = public_dir / "genes_v1.tsv"
     gene_path.write_text("gene_id\n" + "\n".join(genes) + "\n", encoding="utf-8")
+    from pertbench_long.evaluation.contract import CONTRACT_FILENAME, public_submission_contract
+
+    contract = public_submission_contract(effect_unit="log1p_mean_diff")
+    contract_path = public_dir / CONTRACT_FILENAME
+    contract_path.write_text(json.dumps(contract, indent=2), encoding="utf-8")
 
     targets_meta = []
     target_to_cond = {}
@@ -245,7 +250,14 @@ def build_episode_from_store(
         synthetic=synthetic,
         notes=(["SYNTHETIC fixture; not for scientific conclusions"] if synthetic else ["public Kang/PBMC-derived pilot; not a private independent test"])
         + (["scoring_track=diagnostic; processing history unknown"] if scoring_track == "diagnostic" else []),
-        artifact_metadata={"initial": initial, "controls": controls_art, "public_bytes_fingerprint": public_bytes_fp},
+        artifact_metadata={
+            "initial": initial,
+            "controls": controls_art,
+            "public_bytes_fingerprint": public_bytes_fp,
+            "gene_universe_sha256": sha256_file(gene_path),
+            "submission_contract_sha256": sha256_file(contract_path),
+            "declared_public_evidence": ["ev_initial_001.h5ad", "ev_controls_001.h5ad"],
+        },
         canonical_units={"effect": "log1p_mean_diff", "cost": "credit"},
     )
     public_path = public_dir / "episode.json"

@@ -80,6 +80,10 @@ class IntegrityError(PertBenchLongError):
     error_code = "INTEGRITY_FAILURE"
 
 
+class InvalidEpisode(PertBenchLongError):
+    error_code = "INVALID_EPISODE"
+
+
 class ConfigError(PertBenchLongError):
     error_code = "CONFIG_INVALID"
 

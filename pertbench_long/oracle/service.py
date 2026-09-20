@@ -83,6 +83,8 @@ class Oracle:
             raise IdempotencyConflict("request_id was reused with a different payload")
         if result.get("error") == "BUDGET_EXCEEDED":
             raise BudgetExceeded("experimental budget would be exceeded")
+        if result.get("error") == "FAILED_REQUEST":
+            raise InvalidState(result.get("message") or "request_id previously failed; use a new request_id")
         if result.get("error") == "INVALID_STATE":
             raise InvalidState(result.get("message") or "purchases are not allowed in the current run state")
 
@@ -128,6 +130,12 @@ class Oracle:
         expected_hash = auth.get("source_sha256") or live_hash
         if live_hash != expected_hash:
             raise InvalidState("trusted source artifact hash changed")
+        owned = self.ledger.get_purchase(run_id, exp_id)
+        if owned is None and not auth.get("replay"):
+            # authorize should have created the purchase; missing row means refund already happened
+            raise InvalidState("purchase is not authorized")
+        if auth.get("purchase_phase") == "FAILED":
+            raise InvalidState("request_id previously failed; use a new request_id")
 
         staging_dir = self.staging_root / (auth.get("staging_name") or staging_name)
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -162,7 +170,11 @@ class Oracle:
                 dest_tmp.unlink(missing_ok=True)
                 raise InvalidState("delivery copy hash mismatch")
             dest_tmp.replace(dest)
-            delivered = self.ledger.mark_delivered(run_id, request_id)
+            try:
+                delivered = self.ledger.mark_delivered(run_id, request_id)
+            except Exception:
+                # Already materialized: keep the paid artifact; never refund.
+                raise
         except Exception:
             stored = self.ledger.get_request(run_id, request_id)
             if stored and stored["purchase_phase"] == PHASE_AUTHORIZED:

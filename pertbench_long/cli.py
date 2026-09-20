@@ -233,29 +233,15 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
-    from pertbench_long.runtime.runner import _label_path
+    from pertbench_long.runtime.release import check_release
     from pertbench_long.schemas.validate import validate_private_payload
 
     payload = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     spec = validate_private_payload(payload)
     if args.check_artifacts:
         root = Path(args.manifest).parent
-        labels = _label_path(spec, Path(args.manifest))
-        if not labels.exists():
-            raise ConfigError(f"label artifact missing: {labels}")
-        qdir = root / "queryable"
-        for exp_id in spec.experiment_id_to_condition:
-            path = qdir / f"ev_{exp_id}.h5ad"
-            if not path.exists():
-                raise ConfigError(f"queryable artifact missing for {exp_id}")
         public_dir = root.parent / "public"
-        if public_dir.exists():
-            from pertbench_long.schemas.validate import validate_public_payload
-
-            pub = validate_public_payload(json.loads((public_dir / "episode.json").read_text()))
-            from pertbench_long.runtime.runner import bind_public_private
-
-            bind_public_private(pub, spec)
+        check_release(public_dir, Path(args.manifest))
     print(f"ok episode_id={spec.episode_id} genes={len(spec.gene_ids)} track={(spec.scoring_config or {}).get('scoring_track')}")
     return EXIT_OK
 
@@ -297,6 +283,7 @@ def _cmd_smoke(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from pertbench_long.runtime.config import agent_kwargs_from_resolved, resolve_run_config
     from pertbench_long.runtime.runner import AGENT_REGISTRY, EpisodeRunner
 
     cfg = _load_yaml(Path(args.config)) if args.config else {}
@@ -318,42 +305,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
     }
     if unknown:
         raise ConfigError(f"unknown config fields: {sorted(unknown)}")
-    public_dir = _pick(args.public_dir, cfg.get("public_dir"), name="public_dir", required=True)
-    private_manifest = _pick(args.private_manifest, cfg.get("private_manifest"), name="private_manifest", required=True)
-    agent = _pick(args.agent, cfg.get("agent"), DOCUMENTED_RUN_DEFAULTS["agent"], name="agent")
+    resolved = resolve_run_config(
+        cli={
+            "mode": args.mode,
+            "public_dir": args.public_dir,
+            "private_manifest": args.private_manifest,
+            "agent": args.agent,
+            "output": args.output,
+            "seed": args.seed,
+            "allow_unqualified": True if args.allow_unqualified else None,
+        },
+        yaml_cfg=cfg,
+        documented=DOCUMENTED_RUN_DEFAULTS,
+    )
+    agent = resolved["agent"]
     if agent not in AGENT_REGISTRY:
         raise ConfigError(f"unknown agent {agent}")
-    mode = _pick(args.mode, cfg.get("mode"), name="mode", required=True)
-    output = _pick(args.output, cfg.get("output"), DOCUMENTED_RUN_DEFAULTS["output"], name="output")
-    if mode == "local_trusted_debug" and not (args.allow_unqualified or cfg.get("allow_unqualified") or (cfg.get("evaluation") or {}).get("allow_unqualified")):
-        # debug is allowed but never isolation-qualified; require explicit mode rather than a silent fallback.
-        pass
-    agent_kwargs = dict(cfg.get("agent_kwargs") or {})
-    if cfg.get("model"):
-        agent_kwargs = {**cfg.get("model"), **agent_kwargs, "model": cfg["model"]}
-    seed = _pick(args.seed, cfg.get("seed") or (cfg.get("evaluation") or {}).get("seed"), name="seed")
-    if seed is not None:
-        agent_kwargs["seed"] = seed
-    resolved = {
-        "mode": mode,
-        "agent": agent,
-        "public_dir": str(public_dir),
-        "private_manifest": str(private_manifest),
-        "output": str(output),
-        "model": cfg.get("model"),
-        "runtime": cfg.get("runtime") or {},
-        "evaluation": cfg.get("evaluation") or {},
-        "seed": seed,
-        "priority": "explicit_cli > yaml > documented_defaults",
-    }
+    agent_kwargs = agent_kwargs_from_resolved(resolved, extra=dict(cfg.get("agent_kwargs") or {}))
     runner = EpisodeRunner(
-        public_dir=Path(public_dir),
-        private_manifest=Path(private_manifest),
-        run_root=Path(output),
-        mode=mode,
+        public_dir=Path(resolved["public_dir"]),
+        private_manifest=Path(resolved["private_manifest"]),
+        run_root=Path(resolved["output"]),
+        mode=str(resolved["mode"]),
         agent=agent,
         agent_kwargs=agent_kwargs,
-        resource_limits=dict(cfg.get("resource_limits") or cfg.get("runtime") or {}),
+        resource_limits=dict(cfg.get("resource_limits") or resolved.get("runtime") or {}),
         resolved_config=resolved,
     )
     result = runner.run()
@@ -390,14 +366,21 @@ def _cmd_summarize(args: argparse.Namespace) -> int:
         runs.append(
             {
                 "run_id": term.parent.name,
+                "run_dir": str(term.parent),
+                "episode_id": manifest.get("episode_id"),
+                "release": (manifest.get("binding") or {}).get("public_spec_hash"),
                 "outcome": scores.get("outcome") or payload.get("outcome") or "not_scored",
+                "execution_outcome": payload.get("outcome"),
+                "scored_outcome": scores.get("outcome"),
                 "direction_score": scores.get("direction_score"),
+                "AUBC": scores.get("AUBC"),
                 "score_status": scores.get("score_status") or payload.get("score_status") or ("not_scored" if not scores else "scored"),
-                "reason": payload.get("reason"),
+                "reason": scores.get("reason") or payload.get("reason"),
                 "agent": manifest.get("agent"),
                 "model": ((manifest.get("model") or {}) if isinstance(manifest.get("model"), dict) else {}).get("model") or manifest.get("model"),
                 "policy": manifest.get("agent"),
-                "budget": (manifest.get("resolved_config") or {}).get("evaluation", {}).get("experimental_budget_cap") if isinstance(manifest.get("resolved_config"), dict) else None,
+                "seed": (manifest.get("resolved_config") or {}).get("seed") if isinstance(manifest.get("resolved_config"), dict) else None,
+                "budget": manifest.get("experimental_budget") or ((manifest.get("resolved_config") or {}).get("evaluation") or {}).get("experimental_budget_cap") if isinstance(manifest.get("resolved_config"), dict) else None,
                 "isolation_qualified": manifest.get("isolation_qualified"),
                 "scoring_track": (manifest.get("binding") or {}).get("scoring_track"),
                 "synthetic": manifest.get("synthetic"),
@@ -420,26 +403,32 @@ def _cmd_replay(args: argparse.Namespace) -> int:
 
 
 def _cmd_resume(args: argparse.Namespace) -> int:
+    from pertbench_long.runtime.config import agent_kwargs_from_resolved
     from pertbench_long.runtime.runner import EpisodeRunner
 
     run_dir = Path(args.run)
+    if not (run_dir / "run_manifest.json").exists():
+        raise ConfigError("resume requires an existing run_manifest.json")
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
-    cfg = _load_yaml(Path(args.config)) if args.config else (manifest.get("resolved_config") or {})
-    if manifest.get("code") and cfg.get("require_code_match", True):
-        from pertbench_long.runtime.runner import git_status_fingerprint
-
-        now = git_status_fingerprint(Path(__file__).resolve().parents[1])
-        if now.get("commit") != (manifest.get("code") or {}).get("commit"):
-            raise IntegrityError("code fingerprint changed; resume refused")
+    orig = dict(manifest.get("resolved_config") or {})
+    overlay = _load_yaml(Path(args.config)) if args.config else {}
+    resolved = {**orig, **{k: v for k, v in overlay.items() if v is not None}}
+    if orig.get("mode") and overlay.get("mode") and orig.get("mode") != overlay.get("mode"):
+        raise IntegrityError("resume mode does not match the original run")
+    if orig.get("agent") and overlay.get("agent") and orig.get("agent") != overlay.get("agent"):
+        raise IntegrityError("resume agent does not match the original run")
+    public_dir = Path(resolved.get("public_dir") or orig.get("public_dir"))
+    private_manifest = Path(resolved.get("private_manifest") or orig.get("private_manifest"))
+    agent_kwargs = agent_kwargs_from_resolved(resolved, extra=dict(overlay.get("agent_kwargs") or orig.get("agent_kwargs") or {}))
     runner = EpisodeRunner(
-        public_dir=Path(cfg.get("public_dir") or manifest.get("resolved_config", {}).get("public_dir")),
-        private_manifest=Path(cfg.get("private_manifest") or manifest.get("resolved_config", {}).get("private_manifest")),
+        public_dir=public_dir,
+        private_manifest=private_manifest,
         run_root=run_dir.parent,
-        mode=str(cfg.get("mode") or manifest.get("mode")),
-        agent=str(cfg.get("agent") or manifest.get("agent")),
-        agent_kwargs=dict(cfg.get("agent_kwargs") or {}),
-        resource_limits=dict(cfg.get("runtime") or {}),
-        resolved_config=dict(manifest.get("resolved_config") or cfg),
+        mode=str(resolved.get("mode") or manifest.get("mode")),
+        agent=str(resolved.get("agent") or manifest.get("agent")),
+        agent_kwargs=agent_kwargs,
+        resource_limits=dict(resolved.get("runtime") or orig.get("runtime") or {}),
+        resolved_config=resolved,
         resume_run_id=run_dir.name,
     )
     result = runner.run()
@@ -486,26 +475,57 @@ def _cmd_doctor_model(args: argparse.Namespace) -> int:
             },
         }
     ]
+    user = {"role": "user", "content": "Call echo with token=ping. Do not send episode data."}
     tool_round = None
+    follow = None
     tool_ok = False
+    protocol_ok = False
     try:
-        tool_round = client.generate(
-            [{"role": "user", "content": "Call echo with token=ping. Do not send episode data."}],
-            tool_schemas=tools,
-        )
-        tool_ok = any(a.get("name") == "echo" for a in tool_round.actions)
+        tool_round = client.generate([user], tool_schemas=tools)
+        echo_calls = [a for a in tool_round.actions if a.get("name") == "echo"]
+        tool_ok = bool(echo_calls)
+        if tool_ok and client.capabilities.action_format == "native_tools":
+            assistant = dict(tool_round.assistant_message)
+            token = None
+            args = echo_calls[0].get("arguments") or {}
+            if isinstance(args, dict):
+                token = args.get("token")
+            messages = [user, assistant if assistant.get("role") else {"role": "assistant", **assistant}]
+            for action in tool_round.actions:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": action.get("id") or action.get("name") or "echo",
+                        "content": json.dumps({"ok": True, "echo": token or "ping"}),
+                    }
+                )
+            follow = client.generate(messages + [{"role": "user", "content": "Acknowledge the echo result in one word."}], tool_schemas=tools)
+            protocol_ok = follow.assistant_message.get("role") == "assistant" or bool(follow.assistant_message)
+        elif tool_ok:
+            protocol_ok = True
+        elif client.capabilities.action_format == "json_action":
+            from pertbench_long.agents.client import json_action_instruction
+
+            instructed = client.generate(
+                [{"role": "system", "content": json_action_instruction(tools)}, user],
+                tool_schemas=None,
+            )
+            tool_ok = any(a.get("name") == "echo" for a in instructed.actions)
+            protocol_ok = tool_ok
+            tool_round = instructed
     except Exception as exc:
         tool_round = {"error": type(exc).__name__, "message": str(exc)}
     payload = {
         "text_probe": {"finish_reason": text.finish_reason, "content_present": bool(text.assistant_message.get("content"))},
         "tool_probe": {"ok": tool_ok, "actions": getattr(tool_round, "actions", None) or tool_round},
+        "tool_followup": {"ok": protocol_ok, "finish_reason": getattr(follow, "finish_reason", None)},
         "endpoint_reachable": True,
-        "tool_protocol_usable": tool_ok,
+        "tool_protocol_usable": bool(tool_ok and protocol_ok),
         "note": "endpoint reachable is not the same as tool protocol usable; live eval remains unverified until a full episode succeeds",
         "resolved": client.resolved_profile,
     }
     print(json.dumps(payload, indent=2, default=str))
-    return EXIT_OK if tool_ok else EXIT_INFRA
+    return EXIT_OK if tool_ok and protocol_ok else EXIT_INFRA
 
 
 def _cmd_suite(args: argparse.Namespace) -> int:

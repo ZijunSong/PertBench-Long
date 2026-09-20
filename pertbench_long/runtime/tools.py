@@ -164,9 +164,9 @@ class ToolRouter:
             "run_python": lambda a: broker.run_python(str(a.get("code") or ""), self.executor),
             "list_experiments": lambda a: broker.list_experiments(),
             "get_budget": lambda a: broker.get_budget(),
-            "save_prediction_snapshot": lambda a: broker.save_snapshot(str(a["prediction_path"]), a.get("claims_path")),
-            "submit": lambda a: broker.submit(str(a["prediction_path"]), str(a["claims_path"]), stop_reason=str(a.get("stop_reason") or "submitted")),
-            "request_experiment": lambda a: broker.request_experiment(str(a["experiment_id"]), str(a["request_id"])),
+            "save_prediction_snapshot": lambda a: broker.save_snapshot(str(a.get("prediction_path") or ""), a.get("claims_path")),
+            "submit": lambda a: broker.submit(str(a.get("prediction_path") or ""), str(a.get("claims_path") or ""), stop_reason=str(a.get("stop_reason") or "submitted")),
+            "request_experiment": lambda a: broker.request_experiment(str(a.get("experiment_id") or ""), str(a.get("request_id") or "")),
             "run_shell": lambda a: broker.run_shell(str(a.get("command") or ""), self.executor),
         }
 
@@ -175,8 +175,19 @@ class ToolRouter:
         return names
 
     def dispatch(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        args = dict(arguments or {})
+        if arguments is None:
+            args: dict[str, Any] = {}
+        elif not isinstance(arguments, dict):
+            return {
+                "status": "error",
+                "error_code": "MALFORMED_ARGUMENTS",
+                "message": "tool arguments must be a JSON object",
+                "retryable": True,
+            }
+        else:
+            args = dict(arguments)
         if name not in self.allowed_names():
+            return {"status": "error", "error_code": "UNKNOWN_TOOL", "message": f"tool {name!r} is not available", "retryable": False}
             return {"status": "error", "error_code": "UNKNOWN_TOOL", "message": f"tool {name!r} is not available", "retryable": False}
         if name == "request_experiment" and not self.allow_purchase:
             return {"status": "error", "error_code": "PURCHASE_DISABLED", "message": "purchase tools are disabled for this policy", "retryable": False}
@@ -209,4 +220,4 @@ class ToolRouter:
                 }
                 for _ in calls
             ]
-        return [self.dispatch(str(c.get("name")), c.get("arguments") or {}) for c in calls]
+        return [self.dispatch(str(c.get("name")), c.get("arguments") if isinstance(c.get("arguments"), dict) else c.get("arguments")) for c in calls]

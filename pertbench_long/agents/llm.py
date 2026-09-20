@@ -6,7 +6,9 @@ from typing import Any
 
 from pertbench_long.agents.client import ModelClient
 from pertbench_long.agents.loop import AgentLoop
-from pertbench_long.errors import AgentIncomplete, ConfigError
+from pertbench_long.errors import AgentIncomplete
+from pertbench_long.runtime.budget import RuntimeBudget
+from pertbench_long.runtime.config import first_defined
 from pertbench_long.runtime.tools import ToolRouter
 
 
@@ -23,13 +25,22 @@ class LLMAdapter:
 
     def run(self, router: ToolRouter) -> None:
         client = ModelClient(self.config)
+        runtime = dict(self.config.get("runtime") or {})
+        max_steps = first_defined(self.config.get("max_agent_steps"), runtime.get("max_agent_steps"), default=60)
+        deadline = first_defined(self.config.get("deadline_monotonic"), None)
+        budget = self.config.get("runtime_budget")
+        if budget is not None and not isinstance(budget, RuntimeBudget):
+            budget = None
         loop = AgentLoop(
             client,
             router,
             public_spec=router.broker.public_spec,
             workspace=router.broker.workspace,
             allow_purchase=self.allow_purchase and router.allow_purchase,
-            max_steps=int(self.config.get("max_agent_steps") or (self.config.get("runtime") or {}).get("max_agent_steps") or 60),
+            max_steps=int(max_steps),
+            deadline_monotonic=deadline,
+            runtime_budget=budget if isinstance(budget, RuntimeBudget) else router.broker.runtime_budget,
+            seed_status=client.resolved_profile.get("seed_status"),
         )
         loop.run()
         if not loop.submitted:

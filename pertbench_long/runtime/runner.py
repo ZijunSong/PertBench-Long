@@ -16,16 +16,21 @@ from pertbench_long.errors import (
     AgentIncomplete,
     ConfigError,
     IntegrityError,
+    InvalidEpisode,
     IsolationUnavailable,
     PertBenchLongError,
+    TransportError,
 )
-from pertbench_long.evaluation.outcomes import json_safe, official_aubc, official_direction_score
+from pertbench_long.evaluation.outcomes import SCIENCE_FAILURES, json_safe, official_aubc, official_direction_score
 from pertbench_long.evaluation.scoring import aubc, score_predictions
 from pertbench_long.hashes import sha256_file, sha256_json, sha256_text
 from pertbench_long.oracle.ledger import Ledger
 from pertbench_long.oracle.service import Oracle
 from pertbench_long.runtime.broker import Broker
+from pertbench_long.runtime.budget import RuntimeBudget
+from pertbench_long.runtime.config import first_defined
 from pertbench_long.runtime.executor import make_executor
+from pertbench_long.runtime.release import check_release, copy_declared_public_inputs
 from pertbench_long.runtime.state import RunState, StateMachine
 from pertbench_long.runtime.tools import ToolRouter
 from pertbench_long.schemas.validate import parse_resource_profile, validate_private_payload, validate_public_payload
@@ -66,16 +71,8 @@ def _label_path(spec, manifest_path: Path) -> Path:
 def bind_public_private(public_spec, private_spec) -> None:
     pub_a = public_spec.to_dict()
     pub_b = private_spec.public.to_dict()
-    if pub_a["episode_id"] != pub_b["episode_id"]:
-        raise IntegrityError("public pack episode_id does not match private spec")
-    if pub_a["public_split_fingerprint"] != pub_b["public_split_fingerprint"]:
-        raise IntegrityError("split fingerprint mismatch between public pack and private spec")
-    if pub_a["public_scoring_fingerprint"] != pub_b["public_scoring_fingerprint"]:
-        raise IntegrityError("scoring fingerprint mismatch between public pack and private spec")
-    if pub_a["experimental_budget"] != pub_b["experimental_budget"]:
-        raise IntegrityError("budget mismatch between public pack and private spec")
-    if pub_a["gene_universe_artifact"] != pub_b["gene_universe_artifact"]:
-        raise IntegrityError("gene universe artifact mismatch")
+    if sha256_json(pub_a) != sha256_json(pub_b):
+        raise IntegrityError("public pack does not match the private-bound public spec")
     if private_spec.episode_id != public_spec.episode_id:
         raise IntegrityError("private episode_id does not match public pack")
 
@@ -124,18 +121,20 @@ class EpisodeRunner:
         self.isolation_backend = "debug_untrusted"
         self.isolation_error = None
         self.executor = None
+        runtime = dict(self.resolved_config.get("runtime") or {})
         if mode == "isolated_eval":
             try:
-                runtime = dict(self.resolved_config.get("runtime") or {})
                 image = runtime.get("analysis_image") or self.resource_limits.get("analysis_image")
                 profile = parse_resource_profile(
                     self.public_spec.resource_profile if isinstance(self.public_spec.resource_profile, str) else "cpu_pilot_v1"
                 )
+                attestation = dict(runtime.get("isolation_attestation") or {})
                 self.executor = make_executor(
                     mode,
                     image=image,
-                    memory_gib=int(runtime.get("memory_gib") or profile.memory_gib),
-                    cpu=int(runtime.get("cpu") or profile.cpu),
+                    memory_gib=int(first_defined(runtime.get("memory_gib"), profile.memory_gib, default=8)),
+                    cpu=int(first_defined(runtime.get("cpu"), profile.cpu, default=2)),
+                    required_digest=attestation.get("digest"),
                 )
                 self.isolation_backend = self.executor.backend
             except IsolationUnavailable as exc:
@@ -144,29 +143,85 @@ class EpisodeRunner:
             self.executor = make_executor("local_trusted_debug")
 
     def _prepare(self) -> dict[str, Any]:
+        release = check_release(self.public_dir, self.private_manifest)
+        cap = (self.resolved_config.get("evaluation") or {}).get("experimental_budget_cap")
+        if cap is not None and int(cap) != int(self.public_spec.experimental_budget):
+            raise ConfigError(
+                "evaluation.experimental_budget_cap differs from the episode budget; "
+                "refusing to silently rewrite the scoring curve"
+            )
         run_id = self.resume_run_id or f"run_{uuid.uuid4().hex[:12]}"
         run_dir = self.run_root / run_id
         workspace = run_dir / "workspace"
+        original_manifest = None
         if self.resume_run_id:
             if not run_dir.exists():
                 raise ConfigError(f"resume run {run_id} does not exist")
+            manifest_path = run_dir / "run_manifest.json"
+            if not manifest_path.exists():
+                raise ConfigError("resume run is missing run_manifest.json")
+            original_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            orig_binding = original_manifest.get("binding") or {}
+            for key, value in (
+                ("episode_id", self.public_spec.episode_id),
+                ("split_fingerprint", self.public_spec.public_split_fingerprint),
+                ("scoring_fingerprint", self.public_spec.public_scoring_fingerprint),
+                ("private_data_hash", self.private_spec.private_data_hash),
+                ("gene_order_hash", self.private_spec.gene_order_hash),
+                ("public_spec_hash", sha256_json(self.public_spec.to_dict())),
+            ):
+                if orig_binding.get(key) not in {None, value} and orig_binding.get(key) != value:
+                    raise IntegrityError(f"resume binding mismatch for {key}")
+            orig_cfg = original_manifest.get("resolved_config") or {}
+            for field in ("mode", "agent", "seed"):
+                if orig_cfg.get(field) not in {None, self.resolved_config.get(field)} and orig_cfg.get(field) != self.resolved_config.get(field):
+                    raise IntegrityError(f"resume resolved_config mismatch for {field}")
+            term_path = run_dir / "termination.json"
+            if term_path.exists():
+                term = json.loads(term_path.read_text(encoding="utf-8"))
+                if term.get("outcome") in {"completed"} or term.get("state") == "SUBMITTED":
+                    raise ConfigError("run already submitted; resume refused")
+            ledger_probe = Ledger(run_dir / "budget_ledger.sqlite")
+            try:
+                snap = ledger_probe.snapshot(run_id)
+            except KeyError as exc:
+                raise ConfigError("resume ledger is missing the original run") from exc
+            if snap.status == "SUBMITTED":
+                raise ConfigError("run already submitted; resume refused")
         else:
             workspace.mkdir(parents=True)
             (workspace / "evidence").mkdir(exist_ok=True)
-            for src in (self.public_dir / "evidence").glob("*.h5ad"):
-                import shutil
-
-                shutil.copyfile(src, workspace / "evidence" / src.name)
-            import shutil
-
-            shutil.copyfile(self.public_dir / "episode.json", workspace / "episode.json")
-            shutil.copyfile(self.public_dir / self.public_spec.gene_universe_artifact, workspace / self.public_spec.gene_universe_artifact)
+            (workspace / "outputs").mkdir(exist_ok=True)
+            copy_declared_public_inputs(self.public_dir, workspace, self.public_spec)
         ledger = Ledger(run_dir / "budget_ledger.sqlite")
         ledger.init_run(run_id, self.public_spec.episode_id, self.public_spec.experimental_budget)
         oracle = Oracle(self.private_spec, ledger=ledger, private_root=self.private_manifest.parent, public_root=self.public_dir)
         state = StateMachine()
         state.transition(RunState.RUNNING)
         events = run_dir / "events.jsonl"
+        profile = parse_resource_profile(self.public_spec.resource_profile if isinstance(self.public_spec.resource_profile, str) else "cpu_pilot_v1")
+        timeout_s = int(
+            first_defined(
+                (self.resolved_config.get("runtime") or {}).get("episode_timeout_s"),
+                self.resource_limits.get("episode_timeout_s"),
+                profile.episode_timeout_s,
+                default=300,
+            )
+        )
+        deadline = time.monotonic() + timeout_s
+        token_cap = first_defined(
+            (self.resolved_config.get("runtime") or {}).get("max_generation_tokens"),
+            (self.resolved_config.get("model") or {}).get("max_generation_tokens") if isinstance(self.resolved_config.get("model"), dict) else None,
+        )
+        budget = RuntimeBudget(
+            deadline_monotonic=deadline,
+            max_generation_tokens=int(token_cap) if token_cap is not None else None,
+            max_tool_calls=int(
+                first_defined(self.resource_limits.get("max_external_tool_calls"), profile.max_external_tool_calls, default=200)
+            ),
+            max_observation_chars=int((self.resolved_config.get("runtime") or {}).get("max_observation_chars") or 8000),
+            strict_token_cap=bool((self.resolved_config.get("runtime") or {}).get("strict_token_cap")),
+        )
         broker = Broker(
             public_spec=self.public_spec,
             oracle=oracle,
@@ -178,7 +233,10 @@ class EpisodeRunner:
             event_log=events,
             resource_limits=self.resource_limits,
             trusted_snapshot_dir=run_dir / "trusted_snapshots",
+            runtime_budget=budget,
         )
+        if self.resume_run_id:
+            broker.restore_from_ledger()
         labels = _label_path(self.private_spec, self.private_manifest)
         binding = {
             "episode_id": self.public_spec.episode_id,
@@ -190,15 +248,22 @@ class EpisodeRunner:
             "public_spec_hash": sha256_json(self.public_spec.to_dict()),
             "private_manifest_sha256": sha256_file(self.private_manifest),
             "scoring_track": (self.private_spec.scoring_config or {}).get("scoring_track", "official"),
+            "release_check": {k: release[k] for k in ("declared_public_evidence", "public_spec_hash", "label_sha256") if k in release},
         }
-        isolation_qualified = bool(self.mode == "isolated_eval" and self.executor and getattr(self.executor, "isolation_qualified", False) and self.isolation_error is None)
+        isolation_qualified = bool(
+            self.mode == "isolated_eval"
+            and self.executor
+            and getattr(self.executor, "isolation_qualified", False)
+            and self.isolation_error is None
+        )
         manifest = {
             "run_id": run_id,
             "episode_id": self.public_spec.episode_id,
             "mode": self.mode,
             "isolation_backend": self.isolation_backend,
             "isolation_qualified": isolation_qualified,
-            "isolation_note": "qualified only when tool code ran in Docker without private mounts. debug is never qualified.",
+            "isolation_note": "qualified only when the image digest matches runtime.isolation_attestation.digest. debug is never qualified.",
+            "image_digest": getattr(self.executor, "resolved_digest", None),
             "agent": self.agent_name,
             "synthetic": bool(self.public_spec.synthetic),
             "schema_hash": sha256_json(self.public_spec.to_dict()),
@@ -208,11 +273,27 @@ class EpisodeRunner:
             "resource_limits": self.resource_limits or {"profile": self.public_spec.resource_profile},
             "resolved_config": {k: v for k, v in (self.resolved_config or {}).items() if k != "api_key"},
             "binding": binding,
-            "started_utc": time.time(),
+            "started_utc": (original_manifest or {}).get("started_utc") or time.time(),
             "model": (self.resolved_config.get("model") or self.agent_kwargs),
+            "experimental_budget": self.public_spec.experimental_budget,
         }
-        write_run_manifest(run_dir / "run_manifest.json", manifest)
-        return {"run_id": run_id, "run_dir": run_dir, "broker": broker, "oracle": oracle, "state": state, "workspace": workspace, "manifest": manifest}
+        if self.resume_run_id:
+            resume_log = run_dir / "resume_attempts.jsonl"
+            with resume_log.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"ts": time.time(), "binding": binding, "evidence_version": broker.evidence_version}, default=str) + "\n")
+        else:
+            write_run_manifest(run_dir / "run_manifest.json", manifest)
+        return {
+            "run_id": run_id,
+            "run_dir": run_dir,
+            "broker": broker,
+            "oracle": oracle,
+            "state": state,
+            "workspace": workspace,
+            "manifest": original_manifest or manifest,
+            "deadline": deadline,
+            "runtime_budget": budget,
+        }
 
     def _execute_agent(self, broker: Broker) -> None:
         if self.executor is None:
@@ -234,6 +315,16 @@ class EpisodeRunner:
             cfg = dict(self.agent_kwargs)
             cfg.setdefault("policy", name)
             cfg["allow_purchase"] = allow_purchase
+            runtime = dict(self.resolved_config.get("runtime") or {})
+            cfg["runtime"] = {**runtime, **dict(cfg.get("runtime") or {})}
+            if "max_agent_steps" not in cfg:
+                cfg["max_agent_steps"] = first_defined(runtime.get("max_agent_steps"), 60)
+            cfg["deadline_monotonic"] = getattr(broker, "_deadline", None)
+            if broker.runtime_budget is not None:
+                cfg["runtime_budget"] = broker.runtime_budget
+                cfg["deadline_monotonic"] = broker.runtime_budget.deadline
+            if self.resolved_config.get("seed") is not None:
+                cfg["seed"] = self.resolved_config.get("seed")
             LLMAdapter(cfg).run(router)
             return
         raise ConfigError(f"unknown agent {name}")
@@ -241,6 +332,24 @@ class EpisodeRunner:
     def run(self) -> dict[str, Any]:
         try:
             ctx = self._prepare()
+        except InvalidEpisode as exc:
+            return {
+                "run_dir": str(self.run_root),
+                "run_id": None,
+                "outcome": "invalid_episode",
+                "reason": exc.message,
+                "state": "INFRA_ERROR",
+                "trusted_submission": None,
+            }
+        except IntegrityError as exc:
+            return {
+                "run_dir": str(self.run_root),
+                "run_id": None,
+                "outcome": "integrity_failure",
+                "reason": exc.message,
+                "state": "INFRA_ERROR",
+                "trusted_submission": None,
+            }
         except PertBenchLongError as exc:
             return {
                 "run_dir": str(self.run_root),
@@ -252,18 +361,18 @@ class EpisodeRunner:
             }
         broker: Broker = ctx["broker"]
         run_dir: Path = ctx["run_dir"]
-        profile = parse_resource_profile(self.public_spec.resource_profile if isinstance(self.public_spec.resource_profile, str) else "cpu_pilot_v1")
-        timeout_s = int((self.resolved_config.get("runtime") or {}).get("episode_timeout_s") or self.resource_limits.get("episode_timeout_s") or profile.episode_timeout_s)
-        deadline = time.monotonic() + timeout_s
+        deadline = ctx.get("deadline")
         outcome = "invalid_submission"
         reason = "no_submit"
         try:
             if self.isolation_error is not None:
                 raise self.isolation_error
-            if self.mode == "isolated_eval" and not getattr(self.executor, "isolation_qualified", False):
-                raise IsolationUnavailable("isolated_eval refused because the tool worker is not isolated")
+            if broker.runtime_budget is not None:
+                broker.runtime_budget.check()
             self._execute_agent(broker)
-            if time.monotonic() > deadline:
+            if broker.runtime_budget is not None:
+                broker.runtime_budget.check()
+            elif deadline is not None and time.monotonic() > deadline:
                 raise TimeoutError("episode_timeout")
             if broker.state.state == RunState.SUBMITTED and broker.trusted_submission:
                 outcome = "completed"
@@ -281,14 +390,22 @@ class EpisodeRunner:
                 broker.state.transition(RunState.INFRA_ERROR)
             except Exception:
                 pass
+        except TransportError as exc:
+            outcome = "infra_error"
+            reason = f"{exc.error_code}:{exc.message}"
+            broker.log({"action": "transport_error", "error": exc.message, "details": {k: v for k, v in (exc.details or {}).items() if k != "authorization"}})
+            try:
+                broker.state.transition(RunState.INFRA_ERROR)
+            except Exception:
+                pass
         except AgentIncomplete:
             outcome = "invalid_submission"
             reason = "no_submit"
             if broker.state.state == RunState.RUNNING:
                 broker.state.transition(RunState.TERMINATED)
-        except TimeoutError:
-            outcome = "agent_timeout"
-            reason = "episode_timeout"
+        except TimeoutError as exc:
+            outcome = "agent_timeout" if str(exc) in {"episode_timeout", "token_budget"} else "agent_timeout"
+            reason = str(exc) or "episode_timeout"
             if broker.state.state == RunState.RUNNING:
                 broker.state.transition(RunState.TERMINATED)
         except ConfigError as exc:
@@ -305,6 +422,10 @@ class EpisodeRunner:
                 outcome = "invalid_submission"
             elif exc.error_code == "INTEGRITY_FAILURE":
                 outcome = "integrity_failure"
+            elif exc.error_code in {"INVALID_EPISODE"}:
+                outcome = "invalid_episode"
+            elif exc.error_code in {"TRANSPORT_ERROR", "CONFIG_INVALID", "ISOLATION_UNAVAILABLE"}:
+                outcome = "infra_error"
             else:
                 outcome = "agent_tool_failure"
             reason = exc.error_code
@@ -374,19 +495,16 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
     target_ids = [t.target_id for t in spec.public.targets]
     index_path = run_dir / "trusted_snapshots" / "index.json"
     if not index_path.exists():
+        exec_outcome = termination.get("outcome", "invalid_submission")
         payload = {
-            "outcome": "integrity_failure" if termination.get("outcome") == "completed" else termination.get("outcome", "invalid_submission"),
-            "score_status": "not_scored" if termination.get("outcome") == "completed" else "scored",
+            "outcome": "integrity_failure" if exec_outcome == "completed" else exec_outcome,
+            "score_status": "not_scored" if exec_outcome not in SCIENCE_FAILURES else "scored",
             "reason": "trusted snapshot index missing",
-            "direction_score": official_direction_score(termination.get("outcome", "invalid_submission"), None) if termination.get("outcome") != "completed" else None,
-            "AUBC": official_aubc(termination.get("outcome", "invalid_submission"), None),
+            "direction_score": official_direction_score(exec_outcome, 0.0 if exec_outcome in SCIENCE_FAILURES else None),
+            "AUBC": official_aubc(exec_outcome, 0.0 if exec_outcome in SCIENCE_FAILURES else None),
             "synthetic": spec.public.synthetic,
             "label_profile": spec.public.label_profile,
         }
-        if termination.get("outcome") != "completed":
-            payload["direction_score"] = official_direction_score(termination.get("outcome", "invalid_submission"), 0.0)
-            payload["score_status"] = "scored"
-            payload["AUBC"] = official_aubc(termination.get("outcome", "invalid_submission"), 0.0)
         (run_dir / "scores.json").write_text(json.dumps(json_safe(payload), indent=2), encoding="utf-8")
         return payload
 
@@ -456,12 +574,13 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
         return payload
 
     if outcome != "completed":
-        direction = official_direction_score(outcome, 0.0)
-        curve_aubc = official_aubc(outcome, 0.0)
+        direction = official_direction_score(outcome, 0.0 if outcome in SCIENCE_FAILURES else None)
+        curve_aubc = official_aubc(outcome, 0.0 if outcome in SCIENCE_FAILURES else None)
+        score_status = "scored" if outcome in SCIENCE_FAILURES else "not_scored"
         payload = {
             "outcome": outcome,
             "execution_outcome": exec_outcome,
-            "score_status": "scored",
+            "score_status": score_status,
             "direction_score": direction,
             "scores_by_budget": scores_by_b,
             "S0": scores_by_b.get(0),
@@ -473,6 +592,7 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
             "synthetic": spec.public.synthetic,
             "label_profile": spec.public.label_profile,
             "scoring_track": (spec.scoring_config or {}).get("scoring_track", "official"),
+            "reason": termination.get("reason"),
         }
         (run_dir / "scores.json").write_text(json.dumps(json_safe(payload), indent=2), encoding="utf-8")
         return payload

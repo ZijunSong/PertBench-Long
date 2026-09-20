@@ -317,8 +317,9 @@ def test_e16_unscored_completed_not_zero():
     )
     assert summary["incomplete_comparison"] is True
     assert summary["not_scored"]
-    assert 0.0 in summary["groups"][0]["science_scores"] if False else True
     assert summary["science_denominator"] == 1
+    assert summary["groups"][0]["science_denominator"] == 1
+    assert summary["groups"][0]["mean_direction_score_including_failures"] == 0.0
 
 
 def test_a03_native_tools_sent_and_cli_e2e(synthetic_episode, tmp_path):

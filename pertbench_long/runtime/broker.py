@@ -16,6 +16,7 @@ from pertbench_long.errors import InvalidState, PathGuardError, SubmissionInvali
 from pertbench_long.evaluation.submission import validate_claims, validate_predictions
 from pertbench_long.hashes import sha256_file
 from pertbench_long.oracle.service import Oracle
+from pertbench_long.runtime.budget import RuntimeBudget
 from pertbench_long.runtime.executor import PythonExecutor
 from pertbench_long.runtime.sandbox import PathGuard
 from pertbench_long.runtime.state import RunState, StateMachine
@@ -72,6 +73,7 @@ class Broker:
         event_log: Path,
         resource_limits: dict[str, Any] | None = None,
         trusted_snapshot_dir: Path | None = None,
+        runtime_budget: RuntimeBudget | None = None,
     ) -> None:
         self.public_spec = public_spec
         self.oracle = oracle
@@ -103,6 +105,7 @@ class Broker:
         self.trusted_snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_index = SnapshotIndex(self.trusted_snapshot_dir / "index.json")
         self.registry: dict[str, ArtifactRecord] = {}
+        self.runtime_budget = runtime_budget
         self._bootstrap_registry()
 
     def _bootstrap_registry(self) -> None:
@@ -124,6 +127,74 @@ class Broker:
                 evidence_version=0,
             )
             self.registry[rec.artifact_id] = rec
+        gene_name = Path(self.public_spec.gene_universe_artifact).name
+        gene_src = self.workspace / gene_name
+        if not gene_src.exists():
+            gene_src = self.public_root / self.public_spec.gene_universe_artifact
+        if gene_src.exists():
+            self.registry["gene_universe"] = ArtifactRecord(
+                artifact_id="gene_universe",
+                logical_path=gene_name,
+                container_path=f"/workspace/{gene_name}",
+                sha256=sha256_file(gene_src),
+                bytes=gene_src.stat().st_size,
+                kind="protocol",
+                visibility="visible",
+                evidence_version=0,
+            )
+        contract_src = self.workspace / "submission_contract.json"
+        if not contract_src.exists():
+            contract_src = self.public_root / "submission_contract.json"
+        if contract_src.exists():
+            self.registry["submission_contract"] = ArtifactRecord(
+                artifact_id="submission_contract",
+                logical_path="submission_contract.json",
+                container_path="/workspace/submission_contract.json",
+                sha256=sha256_file(contract_src),
+                bytes=contract_src.stat().st_size,
+                kind="protocol",
+                visibility="visible",
+                evidence_version=0,
+            )
+
+    def restore_from_ledger(self) -> None:
+        """Rebuild visible registry and evidence_version from the durable ledger and snapshots."""
+        snap = self.oracle.ledger.snapshot(self.run_id)
+        if snap.status == "SUBMITTED":
+            raise InvalidState("cannot resume a submitted run")
+        for purchase in self.oracle.ledger.list_purchases(self.run_id):
+            artifact = json.loads(purchase.get("artifact_json") or "{}")
+            aid = str(artifact.get("artifact_id") or f"ev_{purchase['experiment_id']}")
+            name = f"{aid}.h5ad" if not aid.endswith(".h5ad") else aid
+            dest = self.workspace / "evidence" / name
+            if not dest.exists():
+                raise InvalidState(f"purchased artifact {aid} is missing from the workspace and cannot be restored")
+            rec = ArtifactRecord(
+                artifact_id=aid.replace(".h5ad", ""),
+                logical_path=f"evidence/{name}",
+                container_path=f"/workspace/evidence/{name}",
+                sha256=str(artifact.get("sha256") or sha256_file(dest)),
+                bytes=int(artifact.get("bytes") or dest.stat().st_size),
+                kind="evidence",
+                visibility="visible",
+                evidence_version=int(snap.unique_purchases),
+            )
+            if rec.sha256 and sha256_file(dest) != rec.sha256:
+                raise InvalidState(f"purchased artifact {aid} hash does not match the ledger")
+            self.registry[rec.artifact_id] = rec
+        self.evidence_version = int(snap.unique_purchases)
+        closed = self.snapshot_index.data.get("closed_versions") or []
+        if self.evidence_version and not closed:
+            self.snapshot_index.data["closed_versions"] = list(range(self.evidence_version))
+            self.snapshot_index.save()
+        if self.event_log.exists():
+            n = 0
+            for line in self.event_log.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    n += 1
+            self.tool_calls = n
+        if self.runtime_budget is not None:
+            self.runtime_budget.tool_calls = self.tool_calls
 
     def visible_evidence_ids(self) -> list[str]:
         return [k for k, v in self.registry.items() if v.kind == "evidence" and v.visibility == "visible"]
@@ -135,6 +206,10 @@ class Broker:
             handle.write(json.dumps(event, default=str) + "\n")
 
     def _count_tool(self) -> None:
+        if self.runtime_budget is not None:
+            self.runtime_budget.count_tool()
+            self.tool_calls = self.runtime_budget.tool_calls
+            return
         self.tool_calls += 1
         if self.tool_calls > self.max_tool_calls:
             raise InvalidState("external tool call budget exceeded")
@@ -190,12 +265,28 @@ class Broker:
                 return rec
         raise ToolObservationError(f"artifact {token!r} is not visible")
 
+    def map_agent_path(self, raw: str) -> Path:
+        """Map container /workspace paths and relative paths onto the host workspace, then PathGuard."""
+        text = str(raw).replace("\\", "/").strip()
+        if not text:
+            raise PathGuardError("path is outside the allowed workspace")
+        if text == "/workspace" or text.startswith("/workspace/"):
+            rel = text[len("/workspace") :].lstrip("/")
+            candidate = self.workspace / rel if rel else self.workspace
+            return self.guard.check(candidate)
+        if text.startswith("/"):
+            raise PathGuardError("host absolute paths are not allowed")
+        if text.startswith("~") or ".." in Path(text).parts:
+            # still allow PathGuard to reject traversal after join, but fail closed on ~
+            if text.startswith("~"):
+                raise PathGuardError("path is outside the allowed workspace")
+        return self.guard.check(self.workspace / text)
+
     def _host_path(self, rec: ArtifactRecord) -> Path:
+        if rec.kind in {"protocol", "analysis"}:
+            return self.map_agent_path(rec.logical_path)
         name = Path(rec.logical_path).name
         ws = self.workspace / "evidence" / name
-        if rec.kind == "analysis":
-            candidate = self.workspace / rec.logical_path
-            return self.guard.check(candidate)
         if ws.exists():
             return self.guard.check(ws)
         pub = self.public_root / "evidence" / name
@@ -207,8 +298,7 @@ class Broker:
             rec = self._resolve_record(relative)
             path = self._host_path(rec)
         except ToolObservationError:
-            raw = Path(relative)
-            self.guard.check(raw if raw.is_absolute() else (self.workspace / raw))
+            self.map_agent_path(relative)
             raise PathGuardError("artifact is not in the visible registry") from None
         if path.suffix.lower() not in SAFE_READ_SUFFIX:
             raise PathGuardError("artifact format is not allowed")
@@ -222,7 +312,11 @@ class Broker:
         return self.oracle.list_experiments()
 
     def get_budget(self) -> dict[str, Any]:
-        return self.oracle.get_budget(self.run_id)
+        self._count_tool()
+        payload = self.oracle.get_budget(self.run_id)
+        if self.runtime_budget is not None:
+            payload = {**payload, "runtime": self.runtime_budget.snapshot()}
+        return payload
 
     def last_snapshot_version(self) -> Optional[int]:
         latest = self.snapshot_index.latest_for_version(self.evidence_version)
@@ -273,7 +367,7 @@ class Broker:
         self._count_tool()
         if self.evidence_version in self.snapshot_index.data.get("closed_versions", []):
             raise InvalidState("this evidence version is closed; later snapshots cannot backfill it")
-        pred = self.guard.check(self._locate(prediction_path) if Path(prediction_path).is_absolute() else (self.workspace / prediction_path))
+        pred = self.map_agent_path(prediction_path)
         import pandas as pd
 
         staging = self.trusted_snapshot_dir / "_staging"
@@ -288,8 +382,7 @@ class Broker:
         claims_hash = None
         staged_claims = None
         if claims_path:
-            claim_src = Path(claims_path)
-            cpath = self.guard.check(claim_src if claim_src.is_absolute() else (self.workspace / claims_path))
+            cpath = self.map_agent_path(claims_path)
             staged_claims = staging / f"claims_{self.evidence_version}_{time.time_ns()}.json"
             shutil.copyfile(cpath, staged_claims)
             claims = json.loads(staged_claims.read_text(encoding="utf-8"))
@@ -371,7 +464,11 @@ class Broker:
         self.state.require_running("python")
         self._count_tool()
         started = time.time()
-        result = executor.run_python(code, timeout_s=self.tool_timeout_s, cwd=self.workspace)
+        timeout_s = self.tool_timeout_s
+        if self.runtime_budget is not None:
+            self.runtime_budget.check(next_tool=False)
+            timeout_s = self.runtime_budget.tool_timeout_s(self.tool_timeout_s)
+        result = executor.run_python(code, timeout_s=timeout_s, cwd=self.workspace)
         self.log(
             {
                 "action": "python",

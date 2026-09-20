@@ -13,6 +13,8 @@ from urllib.parse import urljoin
 
 from pertbench_long.errors import ConfigError, TransportError
 from pertbench_long.hashes import sha256_json
+from pertbench_long.runtime.budget import RuntimeBudget
+from pertbench_long.runtime.config import first_defined
 
 
 def chat_completions_url(base_url: str, endpoint: str | None = None) -> str:
@@ -71,10 +73,15 @@ class ModelClient:
         if self.auth_mode not in {"none", "bearer_env"}:
             raise ConfigError("auth_mode must be none or bearer_env")
         self.api_key_env = model_cfg.get("api_key_env")
-        self.temperature = model_cfg.get("temperature", 0.0)
-        self.max_output_tokens = model_cfg.get("max_output_tokens_per_call") or model_cfg.get("max_tokens") or 2048
-        self.request_timeout_s = int(model_cfg.get("request_timeout_s", 120))
-        self.max_retries = int(model_cfg.get("max_retries", 2))
+        self.temperature = first_defined(model_cfg.get("temperature"), cfg.get("temperature"), default=0.0)
+        self.max_output_tokens = first_defined(
+            model_cfg.get("max_output_tokens_per_call"),
+            model_cfg.get("max_tokens"),
+            cfg.get("max_output_tokens_per_call"),
+            default=2048,
+        )
+        self.request_timeout_s = int(first_defined(model_cfg.get("request_timeout_s"), cfg.get("request_timeout_s"), default=120))
+        self.max_retries = int(first_defined(model_cfg.get("max_retries"), cfg.get("max_retries"), default=2))
         cap = model_cfg.get("capabilities") or {}
         self.capabilities = ModelCapabilities(
             token_parameter=str(model_cfg.get("token_parameter") or cap.get("token_parameter") or "max_tokens"),
@@ -85,7 +92,10 @@ class ModelClient:
             supports_seed=bool(cap.get("supports_seed", True)),
             action_format=str(model_cfg.get("action_format") or cap.get("action_format") or "native_tools"),
         )
-        self.seed = model_cfg.get("seed")
+        self.seed = first_defined(model_cfg.get("seed"), cfg.get("seed"))
+        seed_status = "sent" if (self.capabilities.supports_seed and self.seed is not None) else (
+            "unsupported" if (self.seed is not None and not self.capabilities.supports_seed) else "unset"
+        )
         self.resolved_profile = {
             "backend": self.backend,
             "url": self.url,
@@ -96,6 +106,8 @@ class ModelClient:
             "token_parameter": self.capabilities.token_parameter,
             "temperature": self.temperature,
             "max_output_tokens_per_call": self.max_output_tokens,
+            "seed": self.seed if seed_status == "sent" else None,
+            "seed_status": seed_status,
         }
         self.usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "unknown_usage_calls": 0}
         if not self.model:
@@ -128,27 +140,36 @@ class ModelClient:
                 payload["tool_choice"] = "auto"
         return payload
 
-    def generate(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None = None) -> NormalizedResponse:
+    def generate(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None = None, *, budget: RuntimeBudget | None = None) -> NormalizedResponse:
         payload = self._payload(messages, tool_schemas)
         if self.capabilities.action_format == "json_action":
             payload.setdefault("messages", messages)
         body = json.dumps(payload).encode("utf-8")
         last_error: Exception | None = None
+        attempts = 0
         for attempt in range(self.max_retries + 1):
+            attempts = attempt + 1
             try:
-                raw = self._post(body)
+                if budget is not None:
+                    budget.check(next_model=True)
+                    timeout_s = budget.http_timeout_s(self.request_timeout_s)
+                else:
+                    timeout_s = self.request_timeout_s
+                raw = self._post(body, timeout_s=timeout_s)
                 return self._normalize(raw)
             except TransportError as exc:
                 last_error = exc
                 if not exc.retryable or attempt >= self.max_retries:
+                    if isinstance(exc, TransportError):
+                        exc.details = {**exc.details, "retries": attempts - 1, "retryable": exc.retryable}
                     raise
                 time.sleep(min(2 ** attempt, 8))
         raise last_error or TransportError("request failed")
 
-    def _post(self, body: bytes) -> dict[str, Any]:
+    def _post(self, body: bytes, *, timeout_s: int | None = None) -> dict[str, Any]:
         req = urllib.request.Request(self.url, data=body, headers=self._headers(), method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=self.request_timeout_s) as resp:
+            with urllib.request.urlopen(req, timeout=int(first_defined(timeout_s, self.request_timeout_s))) as resp:
                 raw = json.loads(resp.read().decode("utf-8"))
                 if not isinstance(raw, dict):
                     raise TransportError("provider returned a non-object body")
@@ -160,9 +181,9 @@ class ModelClient:
                 retryable = False
             raise TransportError(f"HTTP {status}", retryable=retryable, details={"status": status}) from exc
         except TimeoutError as exc:
-            raise TransportError("timeout", retryable=True) from exc
+            raise TransportError("timeout", retryable=True, details={"status": None}) from exc
         except urllib.error.URLError as exc:
-            raise TransportError(f"connection error: {exc.reason}", retryable=True) from exc
+            raise TransportError(f"connection error: {exc.reason}", retryable=True, details={"status": None}) from exc
 
     def _normalize(self, raw: dict[str, Any]) -> NormalizedResponse:
         if "error" in raw and "choices" not in raw:
@@ -190,10 +211,12 @@ class ModelClient:
                 fn = (call or {}).get("function") or {}
                 args_raw = fn.get("arguments") or "{}"
                 try:
-                    args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
+                    parsed_args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
                 except json.JSONDecodeError:
-                    args = {"_parse_error": True, "raw": args_raw}
-                actions.append({"id": call.get("id"), "name": fn.get("name"), "arguments": args})
+                    parsed_args = {"_parse_error": True, "raw": args_raw}
+                if not isinstance(parsed_args, dict):
+                    parsed_args = {"_parse_error": True, "raw": parsed_args}
+                actions.append({"id": call.get("id"), "name": fn.get("name"), "arguments": parsed_args})
         if self.capabilities.action_format == "json_action" and not actions:
             content = message.get("content") or ""
             parsed = parse_json_action(content if isinstance(content, str) else "")
@@ -237,11 +260,27 @@ def parse_json_action(text: str) -> dict[str, Any] | None:
         return None
     if not isinstance(obj, dict) or "action" not in obj:
         return None
-    return {"action": obj["action"], "arguments": obj.get("arguments") or {}}
+    arguments = obj.get("arguments")
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {"_parse_error": True, "raw": arguments}
+    return {"action": obj["action"], "arguments": arguments}
 
 
-def json_action_instruction(tool_names: list[str]) -> str:
+def json_action_instruction(tool_schemas: list[dict[str, Any]] | list[str]) -> str:
+    if tool_schemas and isinstance(tool_schemas[0], str):
+        names = list(tool_schemas)
+        return (
+            "Return a single JSON object {\"action\": <name>, \"arguments\": {...}} with no extra keys. "
+            f"Allowed actions: {', '.join(names)}. Do not use eval. Text-only completion is not a submit."
+        )
+    compact = []
+    for item in tool_schemas:
+        fn = (item or {}).get("function") or item
+        compact.append({"name": fn.get("name"), "description": fn.get("description"), "parameters": fn.get("parameters")})
     return (
         "Return a single JSON object {\"action\": <name>, \"arguments\": {...}} with no extra keys. "
-        f"Allowed actions: {', '.join(tool_names)}. Do not use eval. Text-only completion is not a submit."
+        "arguments must be a JSON object matching the tool parameters schema. "
+        f"Tools: {json.dumps(compact)}. Do not use eval. Text-only completion is not a submit."
     )
