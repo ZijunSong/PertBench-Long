@@ -8,6 +8,7 @@ isolation_qualified is an instance result of digest+attestation, never a class c
 from __future__ import annotations
 
 import os
+import select
 import subprocess
 import sys
 import time
@@ -44,29 +45,69 @@ def isolation_is_qualified(*, mode: str, backend: str, resolved_digest: str | No
     return got == want
 
 
-def _bounded_communicate(proc: subprocess.Popen, *, timeout_s: float, max_bytes: int = MAX_CAPTURE_BYTES) -> tuple[str, str, str | None]:
-    """Read stdout/stderr with a byte cap. Does not wait for unbounded output."""
-    try:
-        stdout_b, stderr_b = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            leftover_out, leftover_err = proc.communicate(timeout=5)
-        except Exception:
-            leftover_out, leftover_err = b"", b""
-        stdout = (leftover_out or b"").decode("utf-8", errors="replace")[-8000:]
-        return stdout, "timeout", "timeout"
-    stdout_b = stdout_b or b""
-    stderr_b = stderr_b or b""
+def _decode_tail(raw: bytes) -> str:
+    return raw.decode("utf-8", errors="replace")[-8000:]
+
+
+def _bounded_communicate(
+    proc: subprocess.Popen,
+    *,
+    timeout_s: float,
+    max_bytes: int = MAX_CAPTURE_BYTES,
+    on_limit=None,
+) -> tuple[str, str, str | None]:
+    """Stream stdout/stderr with a hard byte cap. Kill the process when the cap is hit."""
+    deadline = time.monotonic() + float(timeout_s)
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
+    pipes = [pipe for pipe in (proc.stdout, proc.stderr) if pipe is not None]
     overflow = None
-    if len(stdout_b) + len(stderr_b) > max_bytes:
-        overflow = "output_truncated"
-        stdout_b = stdout_b[: max_bytes // 2]
-        stderr_b = stderr_b[: max_bytes // 2]
-    def _decode(raw: bytes) -> str:
-        text = raw.decode("utf-8", errors="replace")
-        return text[-8000:]
-    return _decode(stdout_b), _decode(stderr_b), overflow
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                overflow = "timeout"
+                break
+            if not pipes:
+                if proc.poll() is not None:
+                    break
+                time.sleep(min(0.05, remaining))
+                continue
+            ready, _, _ = select.select(pipes, [], [], min(0.1, remaining))
+            for pipe in ready:
+                chunk = os.read(pipe.fileno(), 4096)
+                if not chunk:
+                    pipes = [p for p in pipes if p is not pipe]
+                    continue
+                target = stdout_buf if pipe is proc.stdout else stderr_buf
+                target.extend(chunk)
+                if len(stdout_buf) + len(stderr_buf) > int(max_bytes):
+                    overflow = "output_limit"
+                    break
+            if overflow:
+                break
+            if proc.poll() is not None and not ready:
+                extra_ready, _, _ = select.select(pipes, [], [], 0)
+                if not extra_ready:
+                    break
+        if overflow in {"timeout", "output_limit"}:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            if on_limit is not None:
+                on_limit(overflow)
+        elif proc.poll() is None:
+            try:
+                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                overflow = overflow or "timeout"
+    except Exception:
+        proc.kill()
+        raise
+    return _decode_tail(bytes(stdout_buf)), _decode_tail(bytes(stderr_buf)), overflow
 
 
 class PythonExecutor:
@@ -76,6 +117,8 @@ class PythonExecutor:
         self.isolation_qualified = False
         self.resolved_digest = None
         self.image = None
+        self.run_reference = None
+        self.disk_quota_enforced = False
 
     def run_python(self, code: str, *, timeout_s: int, cwd: Path, extra_env: dict[str, str] | None = None) -> dict[str, Any]:
         raise NotImplementedError
@@ -119,8 +162,6 @@ class DebugPythonExecutor(PythonExecutor):
             proc.wait(timeout=5)
             raise
         if overflow == "timeout":
-            proc.kill()
-            proc.wait(timeout=5)
             return {
                 "ok": False,
                 "error_code": "TOOL_TIMEOUT",
@@ -130,6 +171,17 @@ class DebugPythonExecutor(PythonExecutor):
                 "exit_code": None,
                 "isolation_qualified": False,
             }
+        if overflow == "output_limit":
+            return {
+                "ok": False,
+                "error_code": "OUTPUT_LIMIT",
+                "stdout": stdout,
+                "stderr": stderr,
+                "elapsed_s": time.monotonic() - started,
+                "exit_code": None,
+                "isolation_qualified": False,
+                "output_truncated": True,
+            }
         return {
             "ok": proc.returncode == 0,
             "stdout": stdout,
@@ -137,7 +189,7 @@ class DebugPythonExecutor(PythonExecutor):
             "elapsed_s": time.monotonic() - started,
             "exit_code": proc.returncode,
             "isolation_qualified": False,
-            "output_truncated": overflow == "output_truncated",
+            "output_truncated": False,
         }
 
     def run_shell(self, command: str, *, timeout_s: int, cwd: Path) -> dict[str, Any]:
@@ -156,6 +208,7 @@ class DockerPythonExecutor(PythonExecutor):
         pids: int = 64,
         required_digest: str | None = None,
         mode: str = "isolated_eval",
+        workspace_gib: int | None = None,
     ) -> None:
         super().__init__()
         self.image = image
@@ -163,10 +216,14 @@ class DockerPythonExecutor(PythonExecutor):
         self.cpu = cpu
         self.pids = pids
         self.required_digest = required_digest
+        self.workspace_gib = workspace_gib
+        self.disk_quota_enforced = False
         self.isolation_qualified = False
+        self.run_reference = image
         if not docker_available():
             raise IsolationUnavailable("isolated_eval requires Docker; this host cannot isolate tool code")
         self.resolved_digest = self._resolve_digest(image)
+        self.run_reference = self.resolved_digest or image
         self.isolation_qualified = isolation_is_qualified(
             mode=mode,
             backend="docker",
@@ -175,6 +232,8 @@ class DockerPythonExecutor(PythonExecutor):
         )
         if required_digest and not self.isolation_qualified:
             raise IsolationUnavailable("analysis image digest does not match runtime.isolation_attestation.digest")
+        if workspace_gib:
+            self.isolation_qualified = False
 
     def _resolve_digest(self, image: str) -> str:
         pinned = normalize_digest(image if "@sha256:" in image else None)
@@ -261,7 +320,7 @@ class DockerPythonExecutor(PythonExecutor):
             "HOME=/tmp",
             "-e",
             "PERTBENCH_WORKSPACE=/workspace",
-            self.image,
+            self.run_reference,
             "python",
             "/workspace/outputs/_worker_job.py",
         ]
@@ -270,7 +329,11 @@ class DockerPythonExecutor(PythonExecutor):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except FileNotFoundError as exc:
             raise IsolationUnavailable("docker binary is not available") from exc
-        stdout, stderr, overflow = _bounded_communicate(proc, timeout_s=float(timeout_s) + 5)
+        stdout, stderr, overflow = _bounded_communicate(
+            proc,
+            timeout_s=float(timeout_s) + 5,
+            on_limit=lambda _reason: self._kill_container(name),
+        )
         timed_out = overflow == "timeout" or (time.monotonic() - started) > float(timeout_s)
         if timed_out:
             self._kill_container(name)
@@ -296,6 +359,20 @@ class DockerPythonExecutor(PythonExecutor):
                 "container": name,
             }
         self._kill_container(name)
+        if overflow == "output_limit":
+            return {
+                "ok": False,
+                "error_code": "OUTPUT_LIMIT",
+                "stdout": stdout,
+                "stderr": stderr,
+                "elapsed_s": time.monotonic() - started,
+                "exit_code": None,
+                "isolation_qualified": False,
+                "image": self.image,
+                "image_digest": self.resolved_digest,
+                "run_image_reference": self.run_reference,
+                "container": name,
+            }
         if proc.returncode not in (0, None) and "Unable to find image" in (stderr or ""):
             raise IsolationUnavailable(f"analysis image {self.image!r} is not available")
         return {
@@ -304,10 +381,11 @@ class DockerPythonExecutor(PythonExecutor):
             "stderr": stderr,
             "elapsed_s": time.monotonic() - started,
             "exit_code": proc.returncode,
-            "isolation_qualified": self.isolation_qualified,
+            "isolation_qualified": self.isolation_qualified if overflow is None else False,
             "image": self.image,
             "image_digest": self.resolved_digest,
-            "output_truncated": overflow == "output_truncated",
+            "run_image_reference": self.run_reference,
+            "output_truncated": overflow == "output_limit",
             "container": name,
         }
 
@@ -322,6 +400,7 @@ def make_executor(
     memory_gib: int = 8,
     cpu: int = 2,
     required_digest: str | None = None,
+    workspace_gib: int | None = None,
 ) -> PythonExecutor:
     if mode == "local_trusted_debug":
         return DebugPythonExecutor()
@@ -329,4 +408,11 @@ def make_executor(
         raise IsolationUnavailable(f"unknown mode {mode}")
     if not image:
         raise IsolationUnavailable("isolated_eval requires runtime.analysis_image")
-    return DockerPythonExecutor(image, memory_gib=memory_gib, cpu=cpu, required_digest=required_digest, mode=mode)
+    return DockerPythonExecutor(
+        image,
+        memory_gib=memory_gib,
+        cpu=cpu,
+        required_digest=required_digest,
+        mode=mode,
+        workspace_gib=workspace_gib,
+    )

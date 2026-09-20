@@ -66,13 +66,15 @@ pertbench-long validate --manifest runs/episodes/pbmc_pilot_001/private/manifest
 
 配方：`docker/analysis.Dockerfile`。`isolation_qualified` 只有在镜像 digest 与 `runtime.isolation_attestation.digest` 一致时才为 true，**不是** executor 类常量。本环境未做真实容器边界验收。
 
-`resume` 会从账本恢复已购证据与 evidence_version，并拒绝已 SUBMITTED 的 run；不会覆盖原始 `run_manifest.json`。
+`resume` 需要 `run_progress.json`（LLM 还要 `agent_messages.json`），恢复 token/工具次数/剩余 wall time 与已购证据，并拒绝更换 model/seed/runtime 或已 SUBMITTED 的 run。暂停不 refill 完整 timeout。预实验请用全新 run，不要用 resume 覆盖失败结果。
+
+正式表只收 `official_eligible=true`（隔离合格 ∧ official track ∧ 非 synthetic）。`workspace_gib` 当前未执行磁盘配额，设置后不能取得隔离资格。复制镜像 digest **不是**隔离验收。
 
 HTTP 401/403/连接失败记为 `infra_error`，科学分为 null，不进模型零分。
 
 ## 文档
 
-- [review_fix_status.md](docs/pertbench_long/review_fix_status.md) — A01–A20 与 B01–B11 逐条状态
+- [review_fix_status.md](docs/pertbench_long/review_fix_status.md) — A01–A20、B01–B11 与 C01–C05 逐条状态
 - [implementation_status.md](docs/pertbench_long/implementation_status.md)
 - [dataset_card_pbmc.md](docs/pertbench_long/dataset_card_pbmc.md)
 - [known_limitations.md](docs/pertbench_long/known_limitations.md)

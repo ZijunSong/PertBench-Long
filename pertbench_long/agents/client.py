@@ -110,6 +110,7 @@ class ModelClient:
             "seed_status": seed_status,
         }
         self.usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "unknown_usage_calls": 0}
+        self.last_requested_output_tokens = None
         if not self.model:
             raise ConfigError("model name is required")
 
@@ -125,13 +126,20 @@ class ModelClient:
         headers["Authorization"] = f"Bearer {key}"
         return headers
 
-    def _payload(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None) -> dict[str, Any]:
+    def _payload(
+        self,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]] | None,
+        *,
+        output_tokens: int | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"model": self.model, "messages": messages}
         cap = self.capabilities
         if cap.supports_temperature and self.temperature is not None:
             payload["temperature"] = self.temperature
-        if cap.token_parameter and self.max_output_tokens is not None:
-            payload[cap.token_parameter] = int(self.max_output_tokens)
+        token_limit = first_defined(output_tokens, self.max_output_tokens)
+        if cap.token_parameter and token_limit is not None:
+            payload[cap.token_parameter] = int(token_limit)
         if cap.supports_seed and self.seed is not None:
             payload["seed"] = int(self.seed)
         if cap.action_format == "native_tools" and cap.supports_tools and tool_schemas:
@@ -141,20 +149,22 @@ class ModelClient:
         return payload
 
     def generate(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]] | None = None, *, budget: RuntimeBudget | None = None) -> NormalizedResponse:
-        payload = self._payload(messages, tool_schemas)
-        if self.capabilities.action_format == "json_action":
-            payload.setdefault("messages", messages)
-        body = json.dumps(payload).encode("utf-8")
         last_error: Exception | None = None
         attempts = 0
         for attempt in range(self.max_retries + 1):
             attempts = attempt + 1
             try:
+                output_tokens = self.max_output_tokens
+                timeout_s = self.request_timeout_s
                 if budget is not None:
                     budget.check(next_model=True)
+                    output_tokens = budget.output_cap_for_call(self.max_output_tokens)
                     timeout_s = budget.http_timeout_s(self.request_timeout_s)
-                else:
-                    timeout_s = self.request_timeout_s
+                self.last_requested_output_tokens = output_tokens
+                payload = self._payload(messages, tool_schemas, output_tokens=output_tokens)
+                if self.capabilities.action_format == "json_action":
+                    payload.setdefault("messages", messages)
+                body = json.dumps(payload).encode("utf-8")
                 raw = self._post(body, timeout_s=timeout_s)
                 return self._normalize(raw)
             except TransportError as exc:
@@ -163,7 +173,12 @@ class ModelClient:
                     if isinstance(exc, TransportError):
                         exc.details = {**exc.details, "retries": attempts - 1, "retryable": exc.retryable}
                     raise
-                time.sleep(min(2 ** attempt, 8))
+                delay = min(2 ** attempt, 8)
+                if budget is not None:
+                    delay = min(delay, max(0.0, budget.remaining_s()))
+                    if delay <= 0:
+                        raise TimeoutError("episode_timeout") from exc
+                time.sleep(delay)
         raise last_error or TransportError("request failed")
 
     def _post(self, body: bytes, *, timeout_s: int | None = None) -> dict[str, Any]:

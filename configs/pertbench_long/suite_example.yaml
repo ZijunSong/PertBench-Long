@@ -26,4 +26,7 @@ runtime:
   tool_timeout_s: 15
 evaluation:
   experimental_budget_cap: 2
-note: Example suite schema. Live models are not mixed with these mock infra failures.
+note: >
+  Example suite schema. Live models are not mixed with these mock infra failures.
+  Paper tables must filter official_eligible=true. Debug, synthetic, and
+  isolation_qualified=false rows stay on an unofficial track.

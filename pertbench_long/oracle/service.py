@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from pertbench_long.errors import BudgetExceeded, IdempotencyConflict, InvalidState, UnavailableExperiment
+from pertbench_long.errors import BudgetExceeded, IdempotencyConflict, IntegrityError, InvalidState, UnavailableExperiment
 from pertbench_long.hashes import sha256_file, sha256_json
 from pertbench_long.oracle.ledger import (
     PHASE_AUTHORIZED,
@@ -140,6 +140,7 @@ class Oracle:
         staging_dir = self.staging_root / (auth.get("staging_name") or staging_name)
         staging_dir.mkdir(parents=True, exist_ok=True)
         staged = staging_dir / f"ev_{exp_id}.h5ad"
+        file_visible = False
         try:
             if not staged.exists():
                 tmp = staging_dir / f".{uuid.uuid4().hex}.tmp"
@@ -170,24 +171,33 @@ class Oracle:
                 dest_tmp.unlink(missing_ok=True)
                 raise InvalidState("delivery copy hash mismatch")
             dest_tmp.replace(dest)
+            file_visible = dest.exists()
             try:
                 delivered = self.ledger.mark_delivered(run_id, request_id)
-            except Exception:
-                # Already materialized: keep the paid artifact; never refund.
-                raise
+            except Exception as exc:
+                raise IntegrityError(
+                    "evidence file was revealed but delivery was not recorded; the run must stop"
+                ) from exc
+        except IntegrityError:
+            raise
         except Exception:
             stored = self.ledger.get_request(run_id, request_id)
-            if stored and stored["purchase_phase"] == PHASE_AUTHORIZED:
+            if stored and stored["purchase_phase"] == PHASE_AUTHORIZED and not file_visible:
                 self.ledger.fail_and_refund(run_id, request_id)
+            elif file_visible:
+                raise IntegrityError(
+                    "evidence file was revealed but delivery was not recorded; the run must stop"
+                ) from None
             raise
 
+        snap = self.ledger.snapshot(run_id)
         return {
             "status": "ok",
             "experiment_id": exp_id,
             "request_id": request_id,
             "charged_credits": 0 if auth.get("replay") else auth["charged"],
-            "remaining_credits": auth["remaining"],
-            "evidence_version": int(auth["evidence_version"]),
+            "remaining_credits": snap.remaining,
+            "evidence_version": int(snap.unique_purchases),
             "artifact": delivered.get("artifact") or artifact,
             "purchase_phase": PHASE_DELIVERED,
             "replay": bool(auth.get("replay")),

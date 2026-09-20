@@ -89,7 +89,7 @@ Per-item audit mapping: `docs/pertbench_long/review_fix_status.md`.
 
 ## R20 · P0/P1 · traces/replay — partial
 
-- `replay`/`trace-summary` do not restore artifacts. `resume` crash-injection unverified.
+- `replay`/`trace-summary` do not restore artifacts. `resume` now requires `run_progress.json` (and LLM `agent_messages.json`); OS crash-injection still unverified.
 
 ## R21 · P1 · interaction meaning — descriptive only
 

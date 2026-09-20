@@ -412,11 +412,13 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     orig = dict(manifest.get("resolved_config") or {})
     overlay = _load_yaml(Path(args.config)) if args.config else {}
-    resolved = {**orig, **{k: v for k, v in overlay.items() if v is not None}}
-    if orig.get("mode") and overlay.get("mode") and orig.get("mode") != overlay.get("mode"):
-        raise IntegrityError("resume mode does not match the original run")
-    if orig.get("agent") and overlay.get("agent") and orig.get("agent") != overlay.get("agent"):
-        raise IntegrityError("resume agent does not match the original run")
+    if overlay.get("model") is not None and overlay.get("model") != orig.get("model"):
+        raise IntegrityError("resume cannot change the model; start a new run")
+    if overlay.get("runtime") is not None and overlay.get("runtime") != orig.get("runtime"):
+        raise IntegrityError("resume cannot change runtime limits; start a new run")
+    if overlay.get("seed") is not None and overlay.get("seed") != orig.get("seed"):
+        raise IntegrityError("resume cannot change the seed; start a new run")
+    resolved = dict(orig)
     public_dir = Path(resolved.get("public_dir") or orig.get("public_dir"))
     private_manifest = Path(resolved.get("private_manifest") or orig.get("private_manifest"))
     agent_kwargs = agent_kwargs_from_resolved(resolved, extra=dict(overlay.get("agent_kwargs") or orig.get("agent_kwargs") or {}))

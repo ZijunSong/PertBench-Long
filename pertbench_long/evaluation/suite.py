@@ -88,6 +88,7 @@ def run_suite(config_path: Path) -> dict[str, Any]:
                             "isolation_qualified": result.get("isolation_qualified") or manifest.get("isolation_qualified"),
                             "scoring_track": (manifest.get("binding") or {}).get("scoring_track") or episode.get("scoring_track"),
                             "synthetic": manifest.get("synthetic") if "synthetic" in manifest else episode.get("synthetic"),
+                            "official_eligible": bool(manifest.get("official_eligible")),
                             "reason": (scores or {}).get("reason") or score_error or result.get("reason"),
                         }
                         if row["outcome"] != "completed":
@@ -96,7 +97,7 @@ def run_suite(config_path: Path) -> dict[str, Any]:
                         rows.append(row)
     summary = summarize_runs(
         rows,
-        group_by=["model", "policy", "seed", "scoring_track", "synthetic", "budget", "isolation_qualified", "episode_id"],
+        group_by=["model", "policy", "seed", "scoring_track", "synthetic", "budget", "isolation_qualified", "official_eligible", "episode_id"],
     )
     summary["failed"] = failed
     summary["incompatible_tracks_not_pooled"] = True

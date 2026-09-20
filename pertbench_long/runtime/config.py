@@ -64,6 +64,25 @@ def resolve_run_config(
     return resolved
 
 
+def run_identity(resolved: Mapping[str, Any], *, agent: str, mode: str) -> dict[str, Any]:
+    runtime = dict(resolved.get("runtime") or {})
+    model = resolved.get("model")
+    return {
+        "agent": agent,
+        "mode": mode,
+        "model": model,
+        "seed": resolved.get("seed"),
+        "runtime_caps": {
+            "max_generation_tokens": runtime.get("max_generation_tokens"),
+            "max_total_tokens": runtime.get("max_total_tokens"),
+            "episode_timeout_s": runtime.get("episode_timeout_s"),
+            "max_agent_steps": runtime.get("max_agent_steps"),
+            "max_external_tool_calls": runtime.get("max_external_tool_calls"),
+            "analysis_image": runtime.get("analysis_image"),
+        },
+    }
+
+
 def agent_kwargs_from_resolved(resolved: Mapping[str, Any], *, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     kwargs = dict(extra or {})
     model = resolved.get("model")

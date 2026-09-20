@@ -19,18 +19,26 @@ model:
 runtime:
   sandbox: docker
   analysis_image: YOUR_ANALYSIS_IMAGE_AT_FIXED_DIGEST
+  isolation_attestation:
+    digest: REPLACE_AFTER_RUNNING_ISOLATION_ACCEPTANCE
+    accepted_by: null
+    accepted_utc: null
+    note: Copying a digest string is not acceptance. Run the commands in docs/pertbench_long/isolation.md against this same image first.
   episode_timeout_s: 1800
   tool_timeout_s: 60
   max_agent_steps: 60
   max_external_tool_calls: 80
   max_generation_tokens: 32000
+  max_total_tokens: null
   context_policy: artifact_summaries_v1
   max_observation_chars: 24000
   cpu: 2
   memory_gib: 8
-  workspace_gib: 2
 evaluation:
   experimental_budget_cap: 2
   seed: 0
   allow_unqualified: false
-note: Replace model and analysis_image. Live local eval is unverified until doctor-model and a full episode succeed.
+note: >
+  Replace model and analysis_image. workspace_gib is omitted because it is not
+  enforced; setting it would disqualify isolation. Live local eval is unverified
+  until doctor-model, isolation acceptance, and a full episode succeed.

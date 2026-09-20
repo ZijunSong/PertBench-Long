@@ -1,7 +1,7 @@
-# A01–A20 / B01–B11 修订状态
+# A01–A20 / B01–B11 / C01–C05 修订状态
 
 日期：2026-09-20。本文件记录每条审计要求对应的代码、测试命令、结果和**未验证**项。  
-A 轮相对 `89d6961`；B 轮相对第二轮复审基线 `b7cfeac`。  
+A 轮相对 `89d6961`；B 轮相对第二轮复审基线 `b7cfeac`；C 轮相对第三轮复审基线 `ab9b880`。  
 不要把“接口存在”“检测到 Docker”“无密钥时报错”写成“模型接入完成”。
 
 测试命令：
@@ -10,7 +10,7 @@ A 轮相对 `89d6961`；B 轮相对第二轮复审基线 `b7cfeac`。
 /data/ppnm/miniconda3/envs/pertdiffbench/bin/python -m pytest tests/pertbench_long -q
 ```
 
-本轮（B01–B11）在该环境结果：**56 passed, 3 skipped**（live 模型 ×2、Docker 隔离实跑 ×1 显式 skip）。未重跑真实 PBMC 全量 baseline，也未调用付费 API 或本机 GPU 服务，也未做真实容器边界验收。
+B 轮（B01–B11）在该环境结果：**56 passed, 3 skipped**。C 轮之后本环境：**63 passed, 5 skipped**（live 模型 ×3、Docker 隔离实跑 ×2 显式 skip）。未重跑真实 PBMC 全量 baseline，也未调用付费 API 或本机 GPU 服务，也未做真实容器边界验收。
 
 ---
 
@@ -247,3 +247,48 @@ A 轮相对 `89d6961`；B 轮相对第二轮复审基线 `b7cfeac`。
 | 空白环境 wheel 安装 | **未做** |
 
 达到审计第 5 节“可直接测评”还需要：用户启动模型服务 → `doctor-model` → isolated 分析镜像可用 → 对绑定 episode 跑 `run`/`score`/`summarize`。当前仓库提供了这条链路的代码，但没有在本机完成 live gate。
+
+---
+
+## C01 · 已揭示证据必须离开 evidence_version=0 — 已实现（故障注入）
+
+- 文件：`oracle/service.py`、`runtime/broker.py`、`runtime/tools.py`
+- 根因：Broker 用本次 `charged_credits>0` 推进版本；`mark_delivered` 失败后文件已可见，幂等重试本次收费为 0，v0 仍可替换
+- 行为：版本取账本 `unique_purchases`；揭示后先 `_reconcile_visible_purchases` 封闭旧版本；文件可见但落账失败 → `IntegrityError` 终止 run；ToolRouter 不再把它收成 `TOOL_OBSERVATION_ERROR`；AUTHORIZED 且文件未可见才退款
+- 测试：`test_c01_visible_file_advances_version_after_deliver_fault`、`test_c01_integrity_is_not_tool_observation`
+- 未验证：OS 级 SIGKILL 落在 authorize / materialize / copy / mark_delivered 四个中断点后的真实进程恢复
+
+## C02 · 生成 token 上限在工具/submit 前生效 — 已实现（mock HTTP）
+
+- 文件：`runtime/budget.py`、`agents/client.py`、`agents/loop.py`
+- 根因：请求仍发 `max_tokens=2048`；`consume_usage` 吃 `total_tokens`；超限 submit 仍 completed
+- 行为：生成预算只计 `completion_tokens`；`max_total_tokens` 独立；每次请求收紧为 `min(per_call, remaining)`；usage 后 `check_after_usage`，**超过** cap 不能执行工具/submit，**恰好等于** cap 允许已返回的合法动作；缺 usage 记估算并计入 remaining，`strict_token_cap` 则拒绝
+- 测试：`test_c02_generation_cap_tightens_request_and_blocks_over_submit`、`test_c02_exact_cap_and_missing_usage_are_explicit`
+- 未验证：真实 provider 忽略收紧后的 `max_tokens`、或缺 usage 的付费模型
+
+## C03 · resume 检查点 — 已实现（工程路径；正式预实验仍建议新 run）
+
+- 文件：`runtime/runner.py`、`runtime/broker.py`、`runtime/config.py` `run_identity`、`agents/loop.py`、`cli.py`
+- 根因：resume 重置 token/tool、接受换模型/限额，并用 events.jsonl 行数推断工具次数
+- 行为：必须有 `run_progress.json`；LLM resume 还必须有 `agent_messages.json`；model/seed/runtime caps 不一致拒绝；从进度文件恢复 completion/prompt/total/tool/remaining_s，**不重发完整 wall-clock**；暂停期间不计入，但不能 refill 原 timeout；不覆盖原 manifest
+- 测试：`test_c03_resume_keeps_budget_and_rejects_model_change`；B02 仍覆盖已购恢复
+- 未验证：真实 LLM 中途杀进程后再续跑的 token 级复现；预实验请用全新 run
+
+## C04 · 流式输出硬上限与磁盘诚实声明 — 部分
+
+- 文件：`runtime/executor.py` `_bounded_communicate`；runner `workspace_gib` 取消资格
+- 根因：先 `communicate()` 全量缓冲再截断；`workspace_gib` 未执行仍可声称限额
+- 行为：`select`/`os.read` 流式读取，超 `max_bytes` 或超时即 kill；Docker `on_limit` 杀命名容器；`workspace_gib` 已设则 `isolation_qualified=false`（当前后端不执行磁盘配额）
+- 测试：`test_c04_output_limit_kills_process_before_it_finishes`
+- 未验证：子进程继承多余输出句柄、耗尽磁盘、真实容器超时后 `docker ps` 为空
+
+## C05 · 隔离资格、digest 固定、正式轨道 — 接口已落地，实跑未验证
+
+- 文件：`runtime/executor.py` `run_reference`；`evaluation/suite.py` / `outcomes.py` `official_eligible`；`docs/pertbench_long/isolation.md`；示例 YAML 的 `isolation_attestation`
+- 行为：`docker run` 使用已解析 digest/image id，不用浮动 tag；`official_eligible = isolation_qualified ∧ official track ∧ not synthetic`；suite 按该字段分组；复制 digest **不是**验收
+- 测试：`test_c05_debug_synthetic_is_not_official_eligible`；`test_c05_docker_boundary_unverified` / `test_c05_live_model_unverified` **skip**
+- 未验证：本机 Docker 边界验收（读 private/密钥/socket/联网失败、合法分析成功、超时无残留）；真实本地 openai-compatible 与真实远端 API 的完整 episode
+
+---
+
+C 轮之后仍不能写“可直接测评”。可以开始少量、单次、synthetic 上的模型接入预实验；论文主表必须 `official_eligible=true`，且须有真实隔离验收与真实模型 episode 证据。

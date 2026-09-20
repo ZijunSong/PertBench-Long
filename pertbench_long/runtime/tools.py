@@ -188,7 +188,6 @@ class ToolRouter:
             args = dict(arguments)
         if name not in self.allowed_names():
             return {"status": "error", "error_code": "UNKNOWN_TOOL", "message": f"tool {name!r} is not available", "retryable": False}
-            return {"status": "error", "error_code": "UNKNOWN_TOOL", "message": f"tool {name!r} is not available", "retryable": False}
         if name == "request_experiment" and not self.allow_purchase:
             return {"status": "error", "error_code": "PURCHASE_DISABLED", "message": "purchase tools are disabled for this policy", "retryable": False}
         try:
@@ -201,8 +200,10 @@ class ToolRouter:
         except InvalidState as exc:
             return {"status": "error", "error_code": exc.error_code, "message": exc.message, "retryable": False}
         except Exception as exc:
-            from pertbench_long.errors import PertBenchLongError
+            from pertbench_long.errors import ConfigError, IntegrityError, IsolationUnavailable, PertBenchLongError, TransportError
 
+            if isinstance(exc, (IntegrityError, IsolationUnavailable, TransportError, ConfigError)):
+                raise
             if isinstance(exc, PertBenchLongError):
                 return {"status": "error", "error_code": exc.error_code, "message": exc.message, "retryable": False}
             return {"status": "error", "error_code": "TOOL_OBSERVATION_ERROR", "message": type(exc).__name__, "retryable": False}

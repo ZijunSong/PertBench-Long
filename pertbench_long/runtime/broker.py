@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from pertbench_long.errors import InvalidState, PathGuardError, SubmissionInvalid, ToolObservationError
+from pertbench_long.errors import IntegrityError, InvalidState, PathGuardError, SubmissionInvalid, ToolObservationError
 from pertbench_long.evaluation.submission import validate_claims, validate_predictions
 from pertbench_long.hashes import sha256_file
 from pertbench_long.oracle.service import Oracle
@@ -106,7 +106,12 @@ class Broker:
         self.snapshot_index = SnapshotIndex(self.trusted_snapshot_dir / "index.json")
         self.registry: dict[str, ArtifactRecord] = {}
         self.runtime_budget = runtime_budget
+        self.progress_path = self.workspace.parent / "run_progress.json"
+        self.run_identity = None
         self._bootstrap_registry()
+        # Resume must not overwrite a durable checkpoint with a fresh zeroed budget.
+        if not self.progress_path.exists():
+            self.persist_progress()
 
     def _bootstrap_registry(self) -> None:
         for artifact_id in list(self.public_spec.initial_evidence) + list(self.public_spec.reference_evidence):
@@ -187,14 +192,68 @@ class Broker:
         if self.evidence_version and not closed:
             self.snapshot_index.data["closed_versions"] = list(range(self.evidence_version))
             self.snapshot_index.save()
-        if self.event_log.exists():
-            n = 0
-            for line in self.event_log.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    n += 1
-            self.tool_calls = n
-        if self.runtime_budget is not None:
-            self.runtime_budget.tool_calls = self.tool_calls
+        progress = self.load_progress()
+        if progress:
+            self.tool_calls = int((progress.get("runtime_budget") or {}).get("tool_calls") or progress.get("tool_calls") or 0)
+            if self.runtime_budget is not None:
+                remaining = (progress.get("runtime_budget") or {}).get("remaining_s")
+                self.runtime_budget.restore(progress.get("runtime_budget") or {}, remaining_s=remaining)
+                self.tool_calls = self.runtime_budget.tool_calls
+        self._reconcile_visible_purchases()
+        self.persist_progress()
+
+    def load_progress(self) -> dict[str, Any] | None:
+        if not self.progress_path.exists():
+            return None
+        return json.loads(self.progress_path.read_text(encoding="utf-8"))
+
+    def persist_progress(self) -> None:
+        payload = {
+            "run_id": self.run_id,
+            "evidence_version": self.evidence_version,
+            "closed_versions": list(self.snapshot_index.data.get("closed_versions") or []),
+            "tool_calls": self.tool_calls,
+            "runtime_budget": self.runtime_budget.snapshot() if self.runtime_budget is not None else None,
+            "visible_evidence_ids": self.visible_evidence_ids(),
+            "run_identity": getattr(self, "run_identity", None),
+        }
+        tmp = self.progress_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(self.progress_path)
+
+    def _close_and_advance(self, new_version: int) -> None:
+        new_version = int(new_version)
+        if new_version <= self.evidence_version:
+            return
+        closed = self.snapshot_index.data.setdefault("closed_versions", [])
+        if self.evidence_version not in closed:
+            closed.append(self.evidence_version)
+            self.snapshot_index.save()
+        self.evidence_version = new_version
+
+    def _reconcile_visible_purchases(self) -> None:
+        """Ledger unique_purchases is the source of truth after any reveal."""
+        snap = self.oracle.ledger.snapshot(self.run_id)
+        for purchase in self.oracle.ledger.list_purchases(self.run_id):
+            artifact = json.loads(purchase.get("artifact_json") or "{}")
+            aid = str(artifact.get("artifact_id") or f"ev_{purchase['experiment_id']}")
+            name = f"{aid}.h5ad" if not aid.endswith(".h5ad") else aid
+            dest = self.workspace / "evidence" / name
+            if not dest.exists():
+                continue
+            rec = ArtifactRecord(
+                artifact_id=aid.replace(".h5ad", ""),
+                logical_path=f"evidence/{name}",
+                container_path=f"/workspace/evidence/{name}",
+                sha256=str(artifact.get("sha256") or sha256_file(dest)),
+                bytes=int(artifact.get("bytes") or dest.stat().st_size),
+                kind="evidence",
+                visibility="visible",
+                evidence_version=int(snap.unique_purchases),
+            )
+            self.registry[rec.artifact_id] = rec
+        self._close_and_advance(int(snap.unique_purchases))
+        self.persist_progress()
 
     def visible_evidence_ids(self) -> list[str]:
         return [k for k, v in self.registry.items() if v.kind == "evidence" and v.visibility == "visible"]
@@ -209,10 +268,12 @@ class Broker:
         if self.runtime_budget is not None:
             self.runtime_budget.count_tool()
             self.tool_calls = self.runtime_budget.tool_calls
+            self.persist_progress()
             return
         self.tool_calls += 1
         if self.tool_calls > self.max_tool_calls:
             raise InvalidState("external tool call budget exceeded")
+        self.persist_progress()
 
     def list_evidence(self) -> list[dict[str, Any]]:
         self._count_tool()
@@ -329,12 +390,23 @@ class Broker:
         if self.last_snapshot_version() != self.evidence_version and existing is None and owned is None:
             raise InvalidState("a frozen prediction snapshot for the current evidence version is required before purchase")
         self._count_tool()
-        result = self.oracle.request_experiment(
-            run_id=self.run_id,
-            experiment_id=experiment_id,
-            request_id=request_id,
-            evidence_dir=self.workspace / "evidence",
-        )
+        try:
+            result = self.oracle.request_experiment(
+                run_id=self.run_id,
+                experiment_id=experiment_id,
+                request_id=request_id,
+                evidence_dir=self.workspace / "evidence",
+            )
+        except Exception:
+            self._reconcile_visible_purchases()
+            dest = self.workspace / "evidence" / f"ev_{experiment_id}.h5ad"
+            if dest.exists() or self.oracle.ledger.get_purchase(self.run_id, experiment_id):
+                if dest.exists():
+                    raise IntegrityError(
+                        "purchase evidence is visible but the ledger/broker versions were not coordinated; the run must stop"
+                    ) from None
+            raise
+        self._reconcile_visible_purchases()
         if result.get("status") == "ok":
             artifact = result["artifact"]
             aid = artifact["artifact_id"]
@@ -350,12 +422,9 @@ class Broker:
                 evidence_version=int(result["evidence_version"]),
             )
             self.registry[aid] = rec
-            if result.get("charged_credits", 0) > 0 or not result.get("replay"):
-                if result.get("charged_credits", 0) > 0:
-                    self.snapshot_index.data["closed_versions"].append(self.evidence_version)
-                    self.snapshot_index.save()
-                    self.evidence_version = int(result["evidence_version"])
+            result = {**result, "evidence_version": self.evidence_version}
         self.log({"action": "request_experiment", "experiment_id": experiment_id, "request_id": request_id, "result": result})
+        self.persist_progress()
         return result
 
     def _gene_ids(self) -> list[str]:

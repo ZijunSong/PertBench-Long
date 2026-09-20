@@ -28,7 +28,7 @@ from pertbench_long.oracle.ledger import Ledger
 from pertbench_long.oracle.service import Oracle
 from pertbench_long.runtime.broker import Broker
 from pertbench_long.runtime.budget import RuntimeBudget
-from pertbench_long.runtime.config import first_defined
+from pertbench_long.runtime.config import first_defined, run_identity
 from pertbench_long.runtime.executor import make_executor
 from pertbench_long.runtime.release import check_release, copy_declared_public_inputs
 from pertbench_long.runtime.state import RunState, StateMachine
@@ -135,6 +135,7 @@ class EpisodeRunner:
                     memory_gib=int(first_defined(runtime.get("memory_gib"), profile.memory_gib, default=8)),
                     cpu=int(first_defined(runtime.get("cpu"), profile.cpu, default=2)),
                     required_digest=attestation.get("digest"),
+                    workspace_gib=runtime.get("workspace_gib"),
                 )
                 self.isolation_backend = self.executor.backend
             except IsolationUnavailable as exc:
@@ -173,9 +174,15 @@ class EpisodeRunner:
                 if orig_binding.get(key) not in {None, value} and orig_binding.get(key) != value:
                     raise IntegrityError(f"resume binding mismatch for {key}")
             orig_cfg = original_manifest.get("resolved_config") or {}
-            for field in ("mode", "agent", "seed"):
-                if orig_cfg.get(field) not in {None, self.resolved_config.get(field)} and orig_cfg.get(field) != self.resolved_config.get(field):
-                    raise IntegrityError(f"resume resolved_config mismatch for {field}")
+            current_id = run_identity(self.resolved_config, agent=self.agent_name, mode=self.mode)
+            original_id = original_manifest.get("run_identity") or run_identity(orig_cfg, agent=str(orig_cfg.get("agent") or self.agent_name), mode=str(orig_cfg.get("mode") or self.mode))
+            if sha256_json(current_id) != sha256_json(original_id):
+                raise IntegrityError("resume cannot change model, seed, or runtime limits; start a new run")
+            progress_path = run_dir / "run_progress.json"
+            if not progress_path.exists():
+                raise ConfigError("resume requires run_progress.json; start a new run instead of inventing a fresh budget")
+            if self.agent_name in {"llm", "llm_adaptive_query", "llm_no_query"} and not (run_dir / "agent_messages.json").exists():
+                raise ConfigError("resume of an LLM run requires agent_messages.json; start a new run")
             term_path = run_dir / "termination.json"
             if term_path.exists():
                 term = json.loads(term_path.read_text(encoding="utf-8"))
@@ -213,9 +220,16 @@ class EpisodeRunner:
             (self.resolved_config.get("runtime") or {}).get("max_generation_tokens"),
             (self.resolved_config.get("model") or {}).get("max_generation_tokens") if isinstance(self.resolved_config.get("model"), dict) else None,
         )
+        total_cap = (self.resolved_config.get("runtime") or {}).get("max_total_tokens")
+        if self.resume_run_id:
+            saved = json.loads((run_dir / "run_progress.json").read_text(encoding="utf-8"))
+            remaining = (saved.get("runtime_budget") or {}).get("remaining_s")
+            if remaining is not None:
+                deadline = time.monotonic() + max(0.0, float(remaining))
         budget = RuntimeBudget(
             deadline_monotonic=deadline,
             max_generation_tokens=int(token_cap) if token_cap is not None else None,
+            max_total_tokens=int(total_cap) if total_cap is not None else None,
             max_tool_calls=int(
                 first_defined(self.resource_limits.get("max_external_tool_calls"), profile.max_external_tool_calls, default=200)
             ),
@@ -250,20 +264,29 @@ class EpisodeRunner:
             "scoring_track": (self.private_spec.scoring_config or {}).get("scoring_track", "official"),
             "release_check": {k: release[k] for k in ("declared_public_evidence", "public_spec_hash", "label_sha256") if k in release},
         }
+        disk_quota_enforced = bool(getattr(self.executor, "disk_quota_enforced", False))
         isolation_qualified = bool(
             self.mode == "isolated_eval"
             and self.executor
             and getattr(self.executor, "isolation_qualified", False)
             and self.isolation_error is None
+            and (disk_quota_enforced or not (self.resolved_config.get("runtime") or {}).get("workspace_gib"))
         )
+        identity = run_identity(self.resolved_config, agent=self.agent_name, mode=self.mode)
+        scoring_track = (self.private_spec.scoring_config or {}).get("scoring_track", "official")
+        official_eligible = bool(isolation_qualified and scoring_track == "official" and not self.public_spec.synthetic)
         manifest = {
             "run_id": run_id,
             "episode_id": self.public_spec.episode_id,
             "mode": self.mode,
             "isolation_backend": self.isolation_backend,
             "isolation_qualified": isolation_qualified,
-            "isolation_note": "qualified only when the image digest matches runtime.isolation_attestation.digest. debug is never qualified.",
+            "isolation_note": "qualified only when the pinned image digest matches a recorded isolation attestation. debug is never qualified. copying a digest string is not an acceptance test.",
             "image_digest": getattr(self.executor, "resolved_digest", None),
+            "run_image_reference": getattr(self.executor, "run_reference", None),
+            "disk_quota_enforced": disk_quota_enforced,
+            "run_identity": identity,
+            "official_eligible": official_eligible,
             "agent": self.agent_name,
             "synthetic": bool(self.public_spec.synthetic),
             "schema_hash": sha256_json(self.public_spec.to_dict()),
@@ -277,6 +300,8 @@ class EpisodeRunner:
             "model": (self.resolved_config.get("model") or self.agent_kwargs),
             "experimental_budget": self.public_spec.experimental_budget,
         }
+        broker.run_identity = identity
+        broker.persist_progress()
         if self.resume_run_id:
             resume_log = run_dir / "resume_attempts.jsonl"
             with resume_log.open("a", encoding="utf-8") as handle:
@@ -447,6 +472,8 @@ class EpisodeRunner:
             "evidence_version": broker.evidence_version,
             "trusted_submission": broker.trusted_submission,
             "isolation_qualified": bool(ctx["manifest"].get("isolation_qualified")),
+            "official_eligible": bool(ctx["manifest"].get("official_eligible")),
+            "runtime_budget": broker.runtime_budget.snapshot() if broker.runtime_budget is not None else None,
             "score_status": "not_scored",
         }
         (run_dir / "termination.json").write_text(json.dumps(termination, indent=2, default=str), encoding="utf-8")

@@ -78,6 +78,31 @@ class AgentLoop:
         if self.deadline is not None and time.monotonic() > self.deadline:
             raise TimeoutError("episode_timeout")
 
+    def _checkpoint_path(self) -> Path:
+        return self.workspace.parent / "agent_messages.json"
+
+    def _save_messages(self, messages: list[dict[str, Any]]) -> None:
+        path = self._checkpoint_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"schema": "agent_messages_v1", "messages": messages}, default=str), encoding="utf-8")
+        tmp.replace(path)
+
+    def _load_or_init_messages(self, default: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        path = self._checkpoint_path()
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            saved = payload.get("messages") if isinstance(payload, dict) else None
+            if payload.get("schema") == "agent_messages_v1" and isinstance(saved, list) and saved:
+                return saved
+        self._save_messages(default)
+        return default
+
+    def _persist_budget(self) -> None:
+        broker = getattr(self.router, "broker", None)
+        if broker is not None and hasattr(broker, "persist_progress"):
+            broker.persist_progress()
+
     def _append_history(self, item: dict[str, Any]) -> None:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.history_path.open("a", encoding="utf-8") as handle:
@@ -119,7 +144,7 @@ class AgentLoop:
         )
         if self.client.capabilities.action_format == "json_action":
             system += "\n" + json_action_instruction(self.router.schemas)
-        messages: list[dict[str, Any]] = [
+        initial_messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {
                 "role": "user",
@@ -135,6 +160,7 @@ class AgentLoop:
                 ),
             },
         ]
+        messages = self._load_or_init_messages(initial_messages)
         json_retries = 0
         tools = self.router.schemas if self.client.capabilities.action_format == "native_tools" else None
         steps = max(0, self.max_steps)
@@ -147,10 +173,33 @@ class AgentLoop:
             except TransportError:
                 raise
             if self.runtime_budget is not None:
-                self.runtime_budget.consume_usage(response.usage, fallback_completion_tokens=self.client.max_output_tokens)
+                reserved = None
+                if self.client.last_requested_output_tokens is not None:
+                    reserved = self.client.last_requested_output_tokens
+                else:
+                    reserved = self.client.max_output_tokens
+                self.runtime_budget.consume_usage(response.usage, fallback_completion_tokens=reserved)
+                self._persist_budget()
+                try:
+                    self.runtime_budget.check_after_usage()
+                except TimeoutError:
+                    self.stop_reason = "token_budget"
+                    assistant = {k: v for k, v in response.assistant_message.items() if v is not None}
+                    messages.append(assistant if assistant.get("role") else {"role": "assistant", **assistant})
+                    if self.client.capabilities.action_format == "native_tools":
+                        for action in response.actions:
+                            messages.append(
+                                self._tool_result_message(
+                                    action,
+                                    {"status": "error", "error_code": "TOKEN_BUDGET", "message": "generation budget exceeded before tool execution", "retryable": False},
+                                )
+                            )
+                    self._save_messages(messages)
+                    raise
             self._append_history({"step": step, "response": response.assistant_message, "finish_reason": response.finish_reason, "usage": response.usage})
             assistant = {k: v for k, v in response.assistant_message.items() if v is not None}
             messages.append(assistant if assistant.get("role") else {"role": "assistant", **assistant})
+            self._save_messages(messages)
             native = self.client.capabilities.action_format == "native_tools"
             if response.finish_reason == "length":
                 if native and assistant.get("tool_calls"):
@@ -163,6 +212,7 @@ class AgentLoop:
                             }
                         )
                 messages.append({"role": "user", "content": "Your previous output was truncated. Continue with a valid tool call. Text is not a submit."})
+                self._save_messages(messages)
                 continue
             actions = [a for a in response.actions if a.get("name") or a.get("id")]
             if not actions:
@@ -176,6 +226,7 @@ class AgentLoop:
                         "content": "No tool action was parsed. Call a tool. Saying you finished does not submit.",
                     }
                 )
+                self._save_messages(messages)
                 continue
             json_retries = 0
             names = [a.get("name") for a in actions]
@@ -188,6 +239,7 @@ class AgentLoop:
                 }
                 for action in actions:
                     messages.append(self._tool_result_message(action, blocked))
+                self._save_messages(messages)
                 continue
             for action in actions:
                 args = action.get("arguments")
@@ -201,6 +253,7 @@ class AgentLoop:
                 else:
                     obs = self.router.dispatch(action["name"], action.get("arguments") or {})
                 messages.append(self._tool_result_message(action, obs))
+                self._save_messages(messages)
                 self._append_history({"step": step, "tool": action.get("name"), "observation": obs})
                 if action.get("name") == "submit" and obs.get("status") == "ok" and (obs.get("observation") or {}).get("receipt"):
                     self.submitted = True

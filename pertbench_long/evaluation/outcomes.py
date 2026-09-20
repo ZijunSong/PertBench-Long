@@ -73,7 +73,7 @@ def summarize_runs(
     group_by: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     items = list(runs)
-    fields = list(group_by or ("agent", "model", "policy", "action_format", "budget", "isolation_qualified", "scoring_track", "synthetic"))
+    fields = list(group_by or ("agent", "model", "policy", "action_format", "budget", "isolation_qualified", "scoring_track", "synthetic", "official_eligible"))
     by_outcome: dict[str, int] = {k: 0 for k in OUTCOMES}
     science_scores: list[float] = []
     infra = []
