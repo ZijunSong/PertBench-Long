@@ -17,17 +17,27 @@ def test_import_dedup_and_conflict(tmp_path: Path):
     pb = tmp_path / "task1_valid_CD4T_exp.csv"
     a.to_csv(pa)
     b.to_csv(pb)
-    store = import_tables([pa, pb], study="unit")
+    store = import_tables([pa, pb], study="unit", declared_matrix_kind="log1p")
     assert store.summary.n_deduplicated == 1
     assert store.summary.n_conflicts == 0
     # conflict row
     c = pd.DataFrame([[0.5, 0.6]], index=["c1-control"], columns=genes)
     pc = tmp_path / "task1_valid_CD4T_conflict.csv"
     c.to_csv(pc)
-    store2 = import_tables([pa, pc], study="unit2")
+    store2 = import_tables(
+        [pa, pc],
+        study="unit2",
+        declared_matrix_kind="log1p",
+        conflict_policy="diagnostic_keep_first",
+    )
     assert store2.summary.n_conflicts == 1
-    assert store.summary.matrix_kind in {"log1p", "normalized", "scaled"}
+    assert store.summary.matrix_kind == "log1p"
     assert store.summary.gene_order_hash
+    from pertbench_long.errors import SchemaError
+    import pytest
+
+    with pytest.raises(SchemaError):
+        import_tables([pa, pc], study="unit3", declared_matrix_kind="log1p", conflict_policy="fail_closed")
 
 
 def test_repeated_log1p_detected():

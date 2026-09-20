@@ -1,0 +1,31 @@
+config_version: "1.0"
+mode: isolated_eval
+agent: llm_adaptive_query
+public_dir: runs/episodes/synthetic_pilot_001/public
+private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+output: runs/eval/api_model
+model:
+  backend: openai_compatible_chat
+  base_url: https://YOUR_API_HOST/v1
+  model: YOUR_API_MODEL_ID
+  auth_mode: bearer_env
+  api_key_env: PERTBENCH_API_KEY
+  action_format: native_tools
+  temperature: null
+  max_output_tokens_per_call: 2048
+  token_parameter: max_completion_tokens
+  request_timeout_s: 120
+  max_retries: 2
+runtime:
+  sandbox: docker
+  analysis_image: YOUR_ANALYSIS_IMAGE_AT_FIXED_DIGEST
+  episode_timeout_s: 1800
+  tool_timeout_s: 60
+  max_agent_steps: 60
+  cpu: 2
+  memory_gib: 8
+evaluation:
+  experimental_budget_cap: 2
+  seed: 0
+  allow_unqualified: false
+note: Bearer token is read only from api_key_env. OPENAI_API_KEY is not a fallback. Live API eval is unverified without credentials.

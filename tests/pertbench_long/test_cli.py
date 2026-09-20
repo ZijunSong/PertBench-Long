@@ -24,12 +24,19 @@ def test_cli_help_and_list():
     assert exc.value.code == 0
     rc = main(["list"])
     assert rc == 0
+    # list must not advertise an unrunnable llm_adapter alias as the only LLM id
+    from pertbench_long.runtime.runner import AGENT_REGISTRY
+
+    assert "llm_adaptive_query" in AGENT_REGISTRY
+    assert "llm_no_query" in AGENT_REGISTRY
 
 
 def test_t19_legacy_pertdiffbench_cli_still_present():
+    import pytest
+
     exe = Path("/data/ppnm/miniconda3/envs/pertdiffbench/bin/pertdiffbench")
     if not exe.exists():
-        return
+        pytest.skip("legacy pertdiffbench CLI is not installed in this environment")
     proc = subprocess.run([str(exe), "list-tasks"], capture_output=True, text=True)
     assert proc.returncode == 0
     assert "known_condition" in proc.stdout

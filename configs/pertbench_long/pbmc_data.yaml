@@ -12,4 +12,6 @@ column_aliases:
   perturbation_status: perturbation
 notes:
   - donor metadata is absent in these files and recorded as null
-  - values look like log1p, not raw counts; effect_proxy_v1 will not re-apply count normalization
+  - processing history is unknown; numeric range must not be treated as proof of log1p
+  - official scoring requires a declared matrix_kind from original processing records
+matrix_kind: unknown

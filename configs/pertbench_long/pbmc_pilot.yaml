@@ -9,3 +9,10 @@ n_panel: 64
 experimental_budget: 2
 protocol: within_study_celltype_ood_v1
 label_profile: effect_proxy_v1
+matrix_kind: unknown
+processing_history: unknown
+scoring_track: diagnostic
+notes:
+  - values look like log1p but processing history is not confirmed
+  - official effect_proxy_v1 scoring is refused until matrix_kind is declared from original processing records
+

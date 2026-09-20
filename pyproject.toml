@@ -24,9 +24,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-data = ["anndata", "scipy", "h5py", "pyarrow"]
-dev = ["pytest", "anndata", "scipy", "h5py", "pyarrow"]
+eval = ["anndata>=0.10,<0.14", "scipy", "h5py", "pyarrow"]
 agent = ["httpx"]
+dev = ["pytest", "anndata>=0.10,<0.14", "scipy", "h5py", "pyarrow"]
 
 [project.scripts]
 pertbench-long = "pertbench_long.cli:main"

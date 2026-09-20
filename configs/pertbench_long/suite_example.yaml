@@ -1,0 +1,29 @@
+config_version: "1.0"
+mode: local_trusted_debug
+allow_unqualified: true
+output: runs/suite/mock
+episodes:
+  - public_dir: runs/episodes/synthetic_pilot_001/public
+    private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+models:
+  - name: mock_a
+    backend: openai_compatible_chat
+    base_url: http://127.0.0.1:9/v1
+    model: mock-a
+    auth_mode: none
+  - name: mock_b
+    backend: openai_compatible_chat
+    base_url: http://127.0.0.1:9/v1
+    model: mock-b
+    auth_mode: none
+policies:
+  - llm_no_query
+  - llm_adaptive_query
+seeds:
+  - 0
+runtime:
+  episode_timeout_s: 30
+  tool_timeout_s: 15
+evaluation:
+  experimental_budget_cap: 2
+note: Example suite schema. Live models are not mixed with these mock infra failures.

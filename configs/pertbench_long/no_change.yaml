@@ -1,4 +1,5 @@
 agent: no_change
 mode: local_trusted_debug
+allow_unqualified: true
 public_dir: runs/episodes/synthetic_pilot_001/public
 private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json

@@ -63,4 +63,4 @@ def test_t20_llm_without_key_unverified(synthetic_episode, tmp_path, monkeypatch
         agent="llm",
     ).run()
     assert r["outcome"] == "infra_error"
-    assert "unverified" in (r.get("reason") or "").lower() or True
+    assert r.get("reason") == "CONFIG_INVALID"

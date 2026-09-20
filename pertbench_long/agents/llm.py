@@ -1,61 +1,42 @@
-"""Provider-agnostic LLM adapter. Keys come from the host environment and are never logged.
-
-Live API calls are unverified unless the user supplies credentials and explicitly runs them.
-"""
+"""LLM agent entry points. Live calls require a configured ModelClient; missing config is not a passing eval."""
 
 from __future__ import annotations
 
-import json
-import os
-from typing import Any, Optional
+from typing import Any
 
-from pertbench_long.errors import IsolationUnavailable
+from pertbench_long.agents.client import ModelClient
+from pertbench_long.agents.loop import AgentLoop
+from pertbench_long.errors import AgentIncomplete, ConfigError
+from pertbench_long.runtime.tools import ToolRouter
 
 
 class LLMAdapter:
-    name = "llm_adapter"
+    """Back-compat name used by list/docs. The loop is AgentLoop + ModelClient + ToolRouter."""
+
+    name = "llm_adaptive_query"
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        cfg = config or {}
-        self.model = cfg.get("model", "unspecified")
-        self.endpoint = cfg.get("endpoint") or os.environ.get("PERTBENCH_LONG_LLM_ENDPOINT")
-        self.temperature = float(cfg.get("temperature", 0.0))
-        self.max_tokens = int(cfg.get("max_tokens", 2048))
-        self.api_key_env = cfg.get("api_key_env", "PERTBENCH_LONG_API_KEY")
+        self.config = dict(config or {})
+        self.allow_purchase = bool(self.config.get("allow_purchase", True))
+        if "llm_no_query" in str(self.config.get("policy") or self.name):
+            self.allow_purchase = False
 
-    def credentials_present(self) -> bool:
-        return bool(os.environ.get(self.api_key_env) or os.environ.get("OPENAI_API_KEY"))
+    def run(self, router: ToolRouter) -> None:
+        client = ModelClient(self.config)
+        loop = AgentLoop(
+            client,
+            router,
+            public_spec=router.broker.public_spec,
+            workspace=router.broker.workspace,
+            allow_purchase=self.allow_purchase and router.allow_purchase,
+            max_steps=int(self.config.get("max_agent_steps") or (self.config.get("runtime") or {}).get("max_agent_steps") or 60),
+        )
+        loop.run()
+        if not loop.submitted:
+            raise AgentIncomplete("model loop ended without a submit receipt")
 
-    def complete(self, messages: list[dict[str, str]], tools: Optional[list[dict[str, Any]]] = None) -> dict[str, Any]:
-        if not self.credentials_present() or not self.endpoint:
-            return {
-                "status": "unverified",
-                "message": "adapter implemented, live run unverified",
-                "model": self.model,
-            }
-        try:
-            import urllib.request
 
-            key = os.environ.get(self.api_key_env) or os.environ.get("OPENAI_API_KEY")
-            payload = json.dumps(
-                {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                }
-            ).encode("utf-8")
-            req = urllib.request.Request(
-                self.endpoint,
-                data=payload,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-            return {"status": "ok", "response": body}
-        except Exception as exc:
-            return {"status": "error", "message": type(exc).__name__, "retryable": True}
-
-    def run(self, broker) -> None:
-        raise IsolationUnavailable("LLM live run is not executed unless credentials and endpoint are configured")
+def policy_allows_purchase(agent_name: str) -> bool:
+    if agent_name in {"llm_no_query", "mean_delta_no_query", "no_change", "no_change_neutral_onehot", "no_change_dev_prior"}:
+        return False
+    return True

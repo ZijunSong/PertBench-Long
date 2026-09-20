@@ -76,6 +76,44 @@ class IsolationViolation(PertBenchLongError):
     error_code = "ISOLATION_VIOLATION"
 
 
+class IntegrityError(PertBenchLongError):
+    error_code = "INTEGRITY_FAILURE"
+
+
+class ConfigError(PertBenchLongError):
+    error_code = "CONFIG_INVALID"
+
+
+class TransportError(PertBenchLongError):
+    error_code = "TRANSPORT_ERROR"
+
+    def __init__(self, message: str, *, retryable: bool = False, details: Optional[dict[str, Any]] = None) -> None:
+        super().__init__(message, details=details)
+        self.retryable = retryable
+
+
+class ToolObservationError(PertBenchLongError):
+    """Structured tool failure that the Agent may correct. Not an infra crash."""
+
+    error_code = "TOOL_OBSERVATION_ERROR"
+
+
+class UnsupportedProtocol(PertBenchLongError):
+    error_code = "UNSUPPORTED_PROTOCOL"
+
+
+class AgentIncomplete(PertBenchLongError):
+    error_code = "AGENT_INCOMPLETE"
+
+
+# CLI exit codes. argparse usage errors still use 2.
+EXIT_OK = 0
+EXIT_CONFIG = 2
+EXIT_AGENT = 3
+EXIT_INFRA = 4
+EXIT_INTEGRITY = 5
+
+
 @dataclass
 class ErrorPayload:
     error_code: str

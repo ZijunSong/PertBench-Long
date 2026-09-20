@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
-from pertbench_long.errors import SchemaError
+from pertbench_long.errors import SchemaError, UnsupportedProtocol
 from pertbench_long.schemas.types import (
     ALLOWED_ASSAYS,
     ALLOWED_COST_UNITS,
@@ -15,6 +15,7 @@ from pertbench_long.schemas.types import (
     ALLOWED_PROTOCOLS,
     ALLOWED_SPECIES,
     ALLOWED_TIME_UNITS,
+    IMPLEMENTED_PROTOCOLS,
     PRIVATE_PUBLIC_FORBIDDEN_KEYS,
     SCHEMA_VERSION,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -118,7 +119,13 @@ def parse_candidate(payload: Any, index: int) -> CandidateExperiment:
     data = _require_mapping(payload, f"candidate_experiments[{index}]")
     allowed = dataclass_field_names(CandidateExperiment)
     _reject_unknown(data, allowed, f"candidate_experiments[{index}]")
-    cost = int(data.get("cost", 1))
+    if "cost" not in data:
+        cost = 1
+    else:
+        raw_cost = data["cost"]
+        if isinstance(raw_cost, bool) or not isinstance(raw_cost, int):
+            raise FieldError(f"candidate_experiments[{index}].cost", "expected integer unit cost; floats are not truncated")
+        cost = raw_cost
     if cost != 1:
         raise FieldError(f"candidate_experiments[{index}].cost", "v1 requires unit cost 1")
     dose_unit = str(data.get("dose_unit", "none"))
@@ -174,6 +181,10 @@ def validate_public_payload(payload: Mapping[str, Any]) -> PublicEpisodeSpec:
     protocol = _require_str(data, "protocol")
     if protocol not in ALLOWED_PROTOCOLS:
         raise FieldError("protocol", f"unknown protocol {protocol!r}")
+    if protocol not in IMPLEMENTED_PROTOCOLS:
+        raise UnsupportedProtocol(
+            f"protocol {protocol!r} is named but not implemented; donor/study/MOA/temporal splits are unsupported"
+        )
     label_profile = _require_str(data, "label_profile")
     if label_profile not in ALLOWED_LABEL_PROFILES:
         raise FieldError("label_profile", f"unknown label_profile {label_profile!r}")
@@ -328,8 +339,14 @@ def validate_private_payload(payload: Mapping[str, Any]) -> PrivateEpisodeSpec:
     matrix_kind = _require_str(data, "matrix_kind")
     if matrix_kind not in ALLOWED_MATRIX_KINDS:
         raise FieldError("matrix_kind", f"illegal matrix_kind {matrix_kind!r}")
-    if matrix_kind == "unknown":
-        raise FieldError("matrix_kind", "unknown matrices cannot enter official scoring")
+    scoring_config = dict(data.get("scoring_config") or {})
+    scoring_track = str(scoring_config.get("scoring_track", "official"))
+    if scoring_track not in {"official", "diagnostic"}:
+        raise FieldError("scoring_config.scoring_track", "must be official or diagnostic")
+    if matrix_kind == "unknown" and scoring_track == "official":
+        raise FieldError("matrix_kind", "unknown matrices cannot enter official scoring; use processing_unknown_diagnostic")
+    if scoring_track == "official" and matrix_kind in {"scaled"}:
+        raise FieldError("matrix_kind", "scaled matrices cannot enter official effect_proxy_v1 scoring")
     genes = list(_require_list(data, "gene_ids"))
     if not genes:
         raise FieldError("gene_ids", "gene universe G cannot be empty")

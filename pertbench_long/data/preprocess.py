@@ -43,22 +43,33 @@ def library_sizes(matrix: np.ndarray) -> np.ndarray:
 
 def normalize_counts_then_log1p(matrix: np.ndarray, *, full_universe: np.ndarray) -> np.ndarray:
     """Normalize using the full assay gene universe, then log1p. Output G is a column subset later."""
-    totals = np.asarray(full_universe, dtype=np.float64).sum(axis=1, keepdims=True)
-    totals = np.maximum(totals, 1e-12)
-    normed = np.asarray(matrix, dtype=np.float64) * (COUNTS_NORM_TARGET / totals)
+    data = np.asarray(matrix, dtype=np.float64)
+    universe = np.asarray(full_universe, dtype=np.float64)
+    if not np.all(np.isfinite(data)) or not np.all(np.isfinite(universe)):
+        raise UnsupportedProfile("counts matrix contains NaN/Inf")
+    if np.any(data < 0) or np.any(universe < 0):
+        raise UnsupportedProfile("counts matrix contains negative values")
+    totals = universe.sum(axis=1, keepdims=True)
+    if np.any(totals <= 0):
+        raise UnsupportedProfile("zero library size is rejected; it is not silently replaced")
+    normed = data * (COUNTS_NORM_TARGET / totals)
     return np.log1p(normed)
 
 
 def to_effect_space(matrix: np.ndarray, matrix_kind: str, *, full_universe: np.ndarray | None = None) -> np.ndarray:
     profile = profile_for_kind(matrix_kind)
     data = np.asarray(matrix, dtype=np.float64)
+    if not np.all(np.isfinite(data)):
+        raise UnsupportedProfile("matrix contains NaN/Inf")
     if matrix_kind == "counts":
         universe = full_universe if full_universe is not None else data
         return normalize_counts_then_log1p(data, full_universe=universe)
     if matrix_kind == "log1p":
         return data
     if matrix_kind == "normalized":
-        return np.log1p(np.clip(data, 0, None))
+        if np.any(data < 0):
+            raise UnsupportedProfile("normalized matrix contains negative values")
+        return np.log1p(data)
     raise UnsupportedProfile(profile.name)
 
 

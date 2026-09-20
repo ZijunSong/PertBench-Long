@@ -1,4 +1,4 @@
-"""CPU helpers that only see authorized evidence."""
+"""CPU helpers that only see authorized evidence. Gene IDs are aligned before arithmetic."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pertbench_long.baselines.mapping import effects_to_probabilities
+from pertbench_long.errors import SchemaError
 
 
 def load_h5ad_matrix(path: Path) -> tuple[np.ndarray, pd.DataFrame, list[str]]:
@@ -19,11 +20,24 @@ def load_h5ad_matrix(path: Path) -> tuple[np.ndarray, pd.DataFrame, list[str]]:
     return np.asarray(X, dtype=np.float64), adata.obs.copy(), list(adata.var_names)
 
 
+def align_to_genes(matrix: np.ndarray, source_genes: Sequence[str], target_genes: Sequence[str]) -> np.ndarray:
+    index = {g: i for i, g in enumerate(source_genes)}
+    missing = [g for g in target_genes if g not in index]
+    if missing:
+        raise SchemaError(f"gene alignment failed; missing {len(missing)} genes")
+    if len(source_genes) != len(set(source_genes)):
+        raise SchemaError("duplicate gene IDs in source matrix")
+    indexer = [index[g] for g in target_genes]
+    return np.asarray(matrix, dtype=np.float64)[:, indexer]
+
+
 def visible_effect_table(evidence_paths: Sequence[Path], control_path: Path, gene_ids: Sequence[str]) -> pd.DataFrame:
-    cX, cobs, _ = load_h5ad_matrix(control_path)
+    cX, cobs, cgenes = load_h5ad_matrix(control_path)
+    cX = align_to_genes(cX, cgenes, gene_ids)
     rows = []
     for path in evidence_paths:
         X, obs, genes = load_h5ad_matrix(path)
+        X = align_to_genes(X, genes, gene_ids)
         for ct, pert in obs[["cell_type", "perturbation_id"]].drop_duplicates().itertuples(index=False):
             stim_mask = (obs["cell_type"] == ct) & (obs["perturbation_id"] == pert)
             ctrl_mask = (cobs["cell_type"] == ct) & (cobs["perturbation_id"] == "Control")
@@ -32,20 +46,22 @@ def visible_effect_table(evidence_paths: Sequence[Path], control_path: Path, gen
             if pert == "Control":
                 continue
             delta = X[np.asarray(stim_mask)].mean(axis=0) - cX[np.asarray(ctrl_mask)].mean(axis=0)
-            for gene, value in zip(genes, delta):
-                if gene in set(gene_ids):
-                    rows.append({"cell_type": ct, "perturbation": pert, "gene_id": gene, "effect": float(value)})
+            for gene, value in zip(gene_ids, delta):
+                rows.append({"cell_type": ct, "perturbation": pert, "gene_id": gene, "effect": float(value)})
     return pd.DataFrame(rows)
 
 
 def control_similarity(control_path: Path, target_cell_types: Sequence[str], candidate_cell_types: Sequence[str]) -> list[str]:
-    X, obs, _ = load_h5ad_matrix(control_path)
+    X, obs, genes = load_h5ad_matrix(control_path)
     means = {}
     for ct in obs["cell_type"].astype(str).unique():
         mask = (obs["cell_type"].astype(str) == ct) & (obs["perturbation_id"].astype(str) == "Control")
         if mask.any():
             means[ct] = X[np.asarray(mask)].mean(axis=0)
-    target_mean = np.mean([means[ct] for ct in target_cell_types if ct in means], axis=0)
+    available = [ct for ct in target_cell_types if ct in means]
+    if not available:
+        return []
+    target_mean = np.mean([means[ct] for ct in available], axis=0)
     scored = []
     for ct in candidate_cell_types:
         if ct not in means:

@@ -4,16 +4,20 @@
 
 | mode | meaning |
 |---|---|
-| `local_trusted_debug` | Broker PathGuard + env scrubbing. Agent code can still open host files if it knows the path. **Not** an isolation pass. |
-| `isolated_eval` | Requires Docker. Probe: `ubuntu:22.04 --network=none --read-only --cap-drop=ALL`, mounts public+workspace only. Private manifest must not be visible in the container. |
+| `local_trusted_debug` | Host subprocess for `run_python`, PathGuard, env scrub. Agent code can still open host files. **Never** `isolation_qualified`. |
+| `isolated_eval` | Requires Docker and `runtime.analysis_image`. Tool code runs with `--network=none`, no private mounts, no Docker socket. If Docker/image is missing, the run is `infra_error` / `ISOLATION_UNAVAILABLE` and does **not** fall back to debug while claiming isolation. |
 
-## What was verified on this host (2026-09-20)
+The model client may stay on the trusted host. Oracle, ledger, and ToolRouter stay on the host. Untrusted Python must not run in the process that holds private labels.
 
-- Docker daemon reachable.
-- `python:3.10-slim` was **not** local; pulling Docker Hub timed out. Probe uses local `ubuntu:22.04`.
-- Probe: container prints `isolated_ok`; private manifest path is `blocked`.
-- CPU Agent/baseline loop still runs on the host broker afterwards. `isolation_qualified=false`. This is not a silent pass of the official isolation gate.
-- PathGuard rejects private paths, `/etc`, `/proc`, docker.sock, pickle/joblib, and obvious network commands in the shell tool.
-- Broker never pickle-loads user artifacts.
+## What this revision implements
 
-If Docker is unavailable, `isolated_eval` returns `infra_error` / `ISOLATION_UNAVAILABLE` and does not fall back to debug while claiming isolation.
+- Removed the `echo isolated_ok` probe that then executed the CPU agent on the host broker.
+- `DockerPythonExecutor` bind-mounts `workspace/evidence` (ro) and `workspace/outputs` (rw) only.
+- Debug executor remains for engineering tests and is recorded as unqualified.
+
+## Still unverified (2026-09-20)
+
+- Building `docker/analysis.Dockerfile` to a pinned digest on this host.
+- Running model-generated code that tries to read the private manifest, host secrets, or the network inside that image, and confirming those attempts fail while legal analysis succeeds.
+
+PathGuard string checks are not a substitute for that OS sandbox.

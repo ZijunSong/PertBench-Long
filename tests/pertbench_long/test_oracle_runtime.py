@@ -77,6 +77,7 @@ def test_t06_idempotent_retry_and_repurchase(synthetic_episode, tmp_path):
     with pytest.raises(IdempotencyConflict):
         # reuse request with different payload
         oracle.request_experiment(run_id=broker.run_id, experiment_id="q_02", request_id="req_0001", evidence_dir=broker.workspace / "evidence")
+    assert not (broker.workspace / "evidence" / "ev_q_02.h5ad").exists()
 
 
 def test_t07_last_credit_race_and_submit_blocks(synthetic_episode, tmp_path):
@@ -105,10 +106,20 @@ def test_t07_last_credit_race_and_submit_blocks(synthetic_episode, tmp_path):
     t1.join()
     t2.join()
     successes = [r for r in results if isinstance(r, dict) and r.get("charged_credits") == 1]
-    failures = [r for r in results if isinstance(r, BudgetExceeded) or (isinstance(r, dict) and r.get("charged_credits") == 0 and not isinstance(r, dict))]
     assert oracle.get_budget(broker.run_id)["remaining_credits"] >= 0
     assert oracle.get_budget(broker.run_id)["charged_credits"] == 2
     assert len(successes) == 1
+    leaked = list((broker.workspace / "evidence").glob("ev_q_*.h5ad"))
+    assert {p.name for p in leaked} <= {"ev_q_01.h5ad", "ev_q_02.h5ad", "ev_q_03.h5ad"}
+    charged_ids = {s["experiment_id"] for s in successes}
+    for path in leaked:
+        exp = path.stem.replace("ev_", "")
+        if exp == "q_01" or exp in charged_ids:
+            continue
+        # the failed last-credit competitor must not be visible
+        owned = oracle.ledger.get_purchase(broker.run_id, exp)
+        if owned is None:
+            raise AssertionError(f"unauthorized file leaked: {path}")
     broker.submit(p, c)
     with pytest.raises(InvalidState):
         broker.request_experiment("q_03", "req_after")

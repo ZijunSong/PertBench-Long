@@ -15,10 +15,20 @@ TAU_DEFAULT = 0.10
 DIRECTIONS = ("down", "neutral", "up")
 
 
+def _require_finite(array: np.ndarray, where: str) -> np.ndarray:
+    data = np.asarray(array, dtype=np.float64)
+    if data.size == 0:
+        raise LabelBuildError(f"{where} is empty")
+    if not np.all(np.isfinite(data)):
+        raise LabelBuildError(f"{where} contains NaN/Inf; invalid values are not labeled as neutral")
+    return data
+
+
 def direction_from_delta(delta: np.ndarray, tau: float = TAU_DEFAULT) -> np.ndarray:
-    out = np.full(delta.shape, "neutral", dtype=object)
-    out = np.where(delta < -tau, "down", out)
-    out = np.where(delta > tau, "up", out)
+    data = _require_finite(delta, "effect delta")
+    out = np.full(data.shape, "neutral", dtype=object)
+    out = np.where(data < -tau, "down", out)
+    out = np.where(data > tau, "up", out)
     return out
 
 
@@ -29,8 +39,12 @@ def mean_effect(
     donor_stim: Optional[Sequence[str]] = None,
     donor_control: Optional[Sequence[str]] = None,
 ) -> tuple[np.ndarray, str]:
+    stim = _require_finite(stim, "stim matrix")
+    control = _require_finite(control, "control matrix")
     if stim.size == 0 or control.size == 0:
         raise LabelBuildError("stim and control matrices must be non-empty")
+    if stim.shape[1] != control.shape[1]:
+        raise LabelBuildError("stim and control gene dimensions do not match")
     if (
         donor_stim is not None
         and donor_control is not None
@@ -88,6 +102,8 @@ def build_effect_proxy_labels(
         delta, aggregation = mean_effect(stim, control, donor_stim=donor_stim, donor_control=donor_ctrl)
         direction = direction_from_delta(delta, tau=tau)
         for gene, dlt, direc in zip(gene_ids, delta, direction):
+            if not np.isfinite(dlt):
+                raise LabelBuildError("reference_effect is not finite")
             rows.append(
                 {
                     "target_id": target_id,
@@ -98,6 +114,13 @@ def build_effect_proxy_labels(
                 }
             )
     frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise LabelBuildError("label table is empty")
+    key = frame["target_id"].astype(str) + "\t" + frame["gene_id"].astype(str)
+    if key.duplicated().any():
+        raise LabelBuildError("duplicate target_id × gene_id labels")
+    if not np.all(np.isfinite(frame["reference_effect"].to_numpy(dtype=np.float64))):
+        raise LabelBuildError("label table contains non-finite reference_effect")
     return LabelTable(
         frame=frame,
         profile=LABEL_EFFECT_PROXY_V1,

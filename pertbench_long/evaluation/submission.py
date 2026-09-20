@@ -63,24 +63,43 @@ def validate_predictions(
     return ordered
 
 
-def validate_claims(payload: dict, *, target_ids: Sequence[str], evidence_ids: Sequence[str]) -> dict:
+def validate_claims(payload: dict, *, target_ids: Sequence[str], gene_ids: Sequence[str], evidence_ids: Sequence[str], allow_empty: bool = True) -> dict:
     if not isinstance(payload, dict):
         raise SubmissionInvalid("claims.json must be an object")
     claims = payload.get("claims")
     if not isinstance(claims, list):
         raise SubmissionInvalid("claims must be a list")
+    if not claims and not allow_empty:
+        raise SubmissionInvalid("claims list is empty")
     visible = set(evidence_ids)
     known_targets = set(target_ids)
+    known_genes = set(gene_ids)
+    seen_ids: set[str] = set()
     for i, claim in enumerate(claims):
         if not isinstance(claim, dict):
             raise SubmissionInvalid(f"claims[{i}] must be an object")
         for key in ("claim_id", "scope", "statement", "evidence_ids", "prediction_entries", "limitations"):
             if key not in claim:
                 raise SubmissionInvalid(f"claims[{i}].{key} missing")
+        cid = claim["claim_id"]
+        if not isinstance(cid, str) or not cid:
+            raise SubmissionInvalid(f"claims[{i}].claim_id must be a non-empty string")
+        if cid in seen_ids:
+            raise SubmissionInvalid(f"duplicate claim_id {cid!r}")
+        seen_ids.add(cid)
+        if not isinstance(claim["evidence_ids"], list) or not isinstance(claim["prediction_entries"], list):
+            raise SubmissionInvalid(f"claims[{i}] list fields have the wrong type")
+        if not isinstance(claim["limitations"], list):
+            raise SubmissionInvalid(f"claims[{i}].limitations must be a list")
         for ev in claim["evidence_ids"]:
             if ev not in visible:
                 raise SubmissionInvalid(f"claims[{i}] cites non-visible evidence {ev!r}")
         for entry in claim["prediction_entries"]:
+            if not isinstance(entry, dict):
+                raise SubmissionInvalid(f"claims[{i}] prediction entry must be an object")
             if entry.get("target_id") not in known_targets:
                 raise SubmissionInvalid(f"claims[{i}] refers to unknown target")
+            gene = entry.get("gene_id")
+            if gene is not None and gene not in known_genes:
+                raise SubmissionInvalid(f"claims[{i}] refers to unknown gene")
     return payload

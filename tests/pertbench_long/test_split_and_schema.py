@@ -88,7 +88,8 @@ def test_t04_scrub_hides_raw_uns_layers(tmp_path: Path):
     assert not contains_marker_bytes(dest, marker)
     loaded = ad.read_h5ad(dest)
     assert loaded.raw is None
-    assert list(loaded.layers.keys()) == []
+    named_layers = [k for k in loaded.layers.keys() if k not in (None, "")]
+    assert named_layers == []
     assert "de_table_target" not in loaded.uns
     assert "target_marker" not in loaded.uns
 

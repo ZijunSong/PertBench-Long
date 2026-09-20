@@ -73,8 +73,10 @@ def score_predictions(
     pred = validate_predictions(predictions, target_ids=target_ids, gene_ids=gene_ids)
     lab = labels.copy()
     lab_key = lab["target_id"].astype(str) + "\t" + lab["gene_id"].astype(str)
+    if lab_key.duplicated().any():
+        raise ValueError("duplicate target×gene labels; conflict is not dropped")
     pred_key = pred["target_id"].astype(str) + "\t" + pred["gene_id"].astype(str)
-    lab = lab.assign(_k=lab_key).drop_duplicates("_k")
+    lab = lab.assign(_k=lab_key)
     merged = pred.assign(_k=pred_key).merge(lab[["_k", "effect_direction_proxy", "reference_effect"]], on="_k", how="left")
     if merged["effect_direction_proxy"].isna().any():
         raise ValueError("labels missing for required prediction rows")

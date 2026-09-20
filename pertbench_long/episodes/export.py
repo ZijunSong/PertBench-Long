@@ -45,6 +45,7 @@ def public_obs_frame(records: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
         "assay",
         "original_obs_id",
         "sample_id",
+        "donor",
     ]
     rows = []
     for rec in records:

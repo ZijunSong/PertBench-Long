@@ -23,6 +23,9 @@ ALLOWED_PROTOCOLS = frozenset(
         PROTOCOL_TEMPORAL_INTERP,
     }
 )
+# Only the first protocol has implemented split/group checks. Others are named but unsupported.
+IMPLEMENTED_PROTOCOLS = frozenset({PROTOCOL_WITHIN_STUDY_CELLTYPE_OOD})
+UNSUPPORTED_PROTOCOLS = ALLOWED_PROTOCOLS - IMPLEMENTED_PROTOCOLS
 
 LABEL_EFFECT_PROXY_V1 = "effect_proxy_v1"
 LABEL_REPLICATE_DE_V1 = "replicate_de_v1"

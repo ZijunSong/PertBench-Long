@@ -15,9 +15,11 @@ from pertbench_long.data.preprocess import profile_for_kind, public_export_finge
 from pertbench_long.episodes.export import export_public_bundle
 from pertbench_long.episodes.split import audit_split, write_split_audit
 from pertbench_long.episodes.synthetic import O_TYPES, Q_TYPES, T_TYPES, build_synthetic_store
+from pertbench_long.errors import UnsupportedProfile, UnsupportedProtocol
 from pertbench_long.evaluation.labels import TAU_DEFAULT, build_effect_proxy_labels
 from pertbench_long.hashes import gene_order_hash, sha256_file, sha256_json
 from pertbench_long.schemas.types import (
+    IMPLEMENTED_PROTOCOLS,
     LABEL_EFFECT_PROXY_V1,
     PROTOCOL_WITHIN_STUDY_CELLTYPE_OOD,
     SCHEMA_VERSION,
@@ -69,9 +71,26 @@ def build_episode_from_store(
     n_panel: int | None = None,
     study_name: str = "kang_pbmc_ifn_public",
     data_release_id: str = "local_unreleased",
+    experimental_budget: int = 2,
+    label_profile: str = LABEL_EFFECT_PROXY_V1,
 ) -> dict[str, Any]:
-    profile_for_kind(store.summary.matrix_kind)
-    effect_matrix = to_effect_space(store.matrix, store.summary.matrix_kind, full_universe=store.matrix)
+    if protocol not in IMPLEMENTED_PROTOCOLS:
+        raise UnsupportedProtocol(f"protocol {protocol!r} is not implemented")
+    if label_profile != LABEL_EFFECT_PROXY_V1:
+        raise UnsupportedProfile(f"label_profile {label_profile!r} is not implemented")
+    if experimental_budget < 0:
+        raise UnsupportedProfile("experimental_budget must be >= 0")
+    scoring_track = "official"
+    if store.summary.matrix_kind in {"unknown", "scaled"}:
+        scoring_track = "diagnostic"
+    profile_for_kind(store.summary.matrix_kind) if scoring_track == "official" else None
+    if scoring_track == "official":
+        effect_matrix = to_effect_space(store.matrix, store.summary.matrix_kind, full_universe=store.matrix)
+    else:
+        # Diagnostic: do not guess a transform from numeric range. Keep values as imported.
+        effect_matrix = np.asarray(store.matrix, dtype=np.float64)
+        if not np.all(np.isfinite(effect_matrix)):
+            raise UnsupportedProfile("diagnostic matrix contains NaN/Inf")
     o_stim = [_condition_for(store, ct, perturbation) for ct in o_types]
     q_stim = [_condition_for(store, ct, perturbation) for ct in q_types]
     t_stim = [_condition_for(store, ct, perturbation) for ct in t_types]
@@ -166,6 +185,7 @@ def build_episode_from_store(
     targets_meta = []
     target_to_cond = {}
     stim_ctrl_matrices = {}
+    donors: dict[str, tuple[list, list]] = {}
     for i, (ct, cid) in enumerate(zip(t_types, t_stim), start=1):
         tid = f"t_{i:02d}"
         ctrl_id = _condition_for(store, ct, control_name)
@@ -173,10 +193,15 @@ def build_episode_from_store(
             _matrix_for(store, cid, gene_index, effect_matrix),
             _matrix_for(store, ctrl_id, gene_index, effect_matrix),
         )
+        donor_stim = [store.records[i].donor for i in store.condition_to_rows[cid]]
+        donor_ctrl = [store.records[i].donor for i in store.condition_to_rows[ctrl_id]]
+        donors[tid] = (donor_stim, donor_ctrl)
         targets_meta.append(TargetDescription(target_id=tid, cell_type=ct, perturbation=perturbation))
         target_to_cond[tid] = cid
 
-    labels = build_effect_proxy_labels(gene_ids=genes, targets=stim_ctrl_matrices, tau=TAU_DEFAULT)
+    if experimental_budget > len(q_catalog):
+        raise UnsupportedProfile("experimental_budget cannot exceed the number of candidate experiments")
+    labels = build_effect_proxy_labels(gene_ids=genes, targets=stim_ctrl_matrices, tau=TAU_DEFAULT, donors=donors)
     label_path = private_dir / "labels.parquet"
     labels.to_parquet(label_path)
     label_card = {
@@ -209,7 +234,7 @@ def build_episode_from_store(
         targets=targets_meta,
         target_control_available=True,
         gene_universe_artifact="genes_v1.tsv",
-        experimental_budget=2,
+        experimental_budget=int(experimental_budget),
         cost_unit="credit",
         resource_profile="cpu_pilot_v1",
         data_release_id=data_release_id,
@@ -218,7 +243,8 @@ def build_episode_from_store(
         gene_panel_policy=panel_policy,
         related_family=f"{study_name}:celltype_ood_ifn",
         synthetic=synthetic,
-        notes=["SYNTHETIC fixture; not for scientific conclusions"] if synthetic else ["public Kang/PBMC-derived pilot; not a private independent test"],
+        notes=(["SYNTHETIC fixture; not for scientific conclusions"] if synthetic else ["public Kang/PBMC-derived pilot; not a private independent test"])
+        + (["scoring_track=diagnostic; processing history unknown"] if scoring_track == "diagnostic" else []),
         artifact_metadata={"initial": initial, "controls": controls_art, "public_bytes_fingerprint": public_bytes_fp},
         canonical_units={"effect": "log1p_mean_diff", "cost": "credit"},
     )
@@ -237,10 +263,15 @@ def build_episode_from_store(
         "observation_ids_by_role": {"O": o_obs, "Q": q_obs, "T": t_obs, "C": c_obs},
         "experiment_id_to_condition": exp_to_cond,
         "target_id_to_condition": target_to_cond,
-        "label_artifact": str(label_path),
+        "label_artifact": "labels.parquet",
         "source_inventory_id": store.summary.gene_order_hash,
         "split_config": {"o_types": list(o_types), "q_types": list(q_types), "t_types": list(t_types)},
-        "scoring_config": {"metric": "direction_score", "tau": TAU_DEFAULT, "label_profile": LABEL_EFFECT_PROXY_V1},
+        "scoring_config": {
+            "metric": "direction_score",
+            "tau": TAU_DEFAULT,
+            "label_profile": LABEL_EFFECT_PROXY_V1,
+            "scoring_track": scoring_track,
+        },
         "private_data_hash": sha256_file(label_path),
         "development_group": "public_pbmc_study" if not synthetic else "synthetic",
         "evaluation_group": episode_id,
@@ -272,7 +303,7 @@ def build_episode_from_store(
     }
 
 
-def build_synthetic_episode(dest: Path, *, episode_id: str = "synthetic_pilot_001", hidden_shift: float = 0.0) -> dict[str, Any]:
+def build_synthetic_episode(dest: Path, *, episode_id: str = "synthetic_pilot_001", hidden_shift: float = 0.0, experimental_budget: int = 2) -> dict[str, Any]:
     store = build_synthetic_store(hidden_shift=hidden_shift)
     return build_episode_from_store(
         store,
@@ -284,4 +315,5 @@ def build_synthetic_episode(dest: Path, *, episode_id: str = "synthetic_pilot_00
         synthetic=True,
         study_name="synthetic_pbmc_v1",
         data_release_id="synthetic_v1",
+        experimental_budget=experimental_budget,
     )

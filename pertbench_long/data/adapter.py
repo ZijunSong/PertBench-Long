@@ -52,6 +52,25 @@ def infer_perturbation_from_index(index: str) -> str:
     return "unknown"
 
 
+def numeric_kind_contradiction(matrix: np.ndarray, declared: str) -> list[str]:
+    """Range checks only flag contradictions with a declared kind. They never prove log1p."""
+    notes: list[str] = []
+    finite = np.asarray(matrix, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return ["empty_or_nonfinite_matrix"]
+    if declared == "counts" and np.any(finite < 0):
+        notes.append("declared_counts_but_negative_values")
+    if declared == "counts":
+        rounded = np.round(finite)
+        frac = float(np.mean(np.abs(finite - rounded) < 1e-8))
+        if frac < 0.99:
+            notes.append("declared_counts_but_fractional_values")
+    if declared in {"log1p", "normalized"} and np.any(finite < 0):
+        notes.append(f"declared_{declared}_but_negative_values")
+    return notes
+
+
 def infer_matrix_kind(matrix: np.ndarray) -> str:
     finite = matrix[np.isfinite(matrix)]
     if finite.size == 0:
@@ -101,6 +120,35 @@ def load_obs_frame(path: Path) -> Optional[pd.DataFrame]:
     return None
 
 
+def _optional_meta(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    return None if text in {"", "None", "nan", "NA"} else text
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        raise SchemaError("dose/time must be finite when present")
+    return number
+
+
 @dataclass
 class CanonicalStore:
     matrix: np.ndarray
@@ -127,145 +175,174 @@ def import_tables(
     cell_type_from_filename: bool = True,
     default_cell_type: Optional[str] = None,
     source_role: str = "canonical_csv",
+    declared_matrix_kind: Optional[str] = None,
+    conflict_policy: str = "fail_closed",
+    sample_id_fallback: str = "filename_declared",
 ) -> CanonicalStore:
+    """Align genes first, then identity-dedup. declared_matrix_kind is required for official scoring."""
     alias_map = dict(DEFAULT_ALIASES)
     if aliases:
         alias_map.update(aliases)
-    matrices: list[np.ndarray] = []
-    records: list[ExperimentRecord] = []
-    gene_sets: list[list[str]] = []
-    summary = ImportSummary()
-    key_to_vector: dict[str, np.ndarray] = {}
-    key_to_index: dict[str, int] = {}
+    if conflict_policy not in {"fail_closed", "diagnostic_keep_first"}:
+        raise SchemaError("conflict_policy must be fail_closed or diagnostic_keep_first")
 
     file_list = [Path(p) for p in files]
+    summary = ImportSummary()
     summary.source_files = [str(p) for p in file_list]
+    loaded: list[dict[str, Any]] = []
+    gene_sets: list[list[str]] = []
+    declared_kinds: list[str] = []
 
     for path in file_list:
         matrix, obs_ids, genes = load_table(path)
-        gene_sets.append(genes)
+        if len(genes) != len(set(genes)):
+            raise SchemaError(f"duplicate gene IDs in {path.name}")
+        if matrix.shape[1] != len(genes):
+            raise SchemaError(f"matrix columns do not match gene IDs in {path.name}")
+        if not np.all(np.isfinite(matrix)):
+            raise SchemaError(f"non-finite values in {path.name}")
         obs_meta = load_obs_frame(path)
+        file_kind = declared_matrix_kind
+        if obs_meta is not None and "matrix_kind" in obs_meta.columns:
+            kinds = {str(v) for v in obs_meta["matrix_kind"].dropna().unique()}
+            if len(kinds) > 1:
+                raise SchemaError(f"mixed matrix_kind within {path.name}")
+            if kinds:
+                file_kind = next(iter(kinds))
+        declared_kinds.append(file_kind or "undeclared")
+        gene_sets.append(genes)
+        loaded.append(
+            {
+                "path": path,
+                "matrix": np.asarray(matrix, dtype=np.float64),
+                "obs_ids": obs_ids,
+                "genes": genes,
+                "obs_meta": obs_meta,
+                "file_kind": file_kind,
+            }
+        )
         summary.n_source_rows += matrix.shape[0]
-        cell_type_col = None
-        pert_col = None
-        donor_col = None
-        sample_col = None
+
+    unique_declared = {k for k in declared_kinds if k != "undeclared"}
+    if len(unique_declared) > 1:
+        raise SchemaError("mixed declared matrix kinds across files; convert each file before merge")
+    kind = declared_matrix_kind or (next(iter(unique_declared)) if unique_declared else None)
+    if kind is None:
+        summary.matrix_kind = "unknown"
+        summary.notes.append("matrix_kind_undeclared_processing_unknown_diagnostic")
+        summary.notes.append("numeric inference is diagnostic only and is not used for official transforms")
+    else:
+        summary.matrix_kind = kind
+        for item in loaded:
+            summary.notes.extend(numeric_kind_contradiction(item["matrix"], kind))
+
+    common = _intersect_genes(gene_sets)
+    summary.notes.append("aligned_to_gene_intersection_before_identity")
+
+    records: list[ExperimentRecord] = []
+    rows: list[np.ndarray] = []
+    key_to_vector: dict[str, np.ndarray] = {}
+    conflict_table: list[str] = []
+
+    for item in loaded:
+        path = item["path"]
+        genes = item["genes"]
+        col_index = {g: j for j, g in enumerate(genes)}
+        indexer = [col_index[g] for g in common]
+        aligned = item["matrix"][:, indexer]
+        obs_meta = item["obs_meta"]
+        obs_ids = item["obs_ids"]
+        cell_type_col = pert_col = donor_col = sample_col = dose_col = time_col = None
         if obs_meta is not None:
             cell_type_col = resolve_column(obs_meta.columns, alias_map, "cell_type")
             pert_col = resolve_column(obs_meta.columns, alias_map, "perturbation")
             donor_col = resolve_column(obs_meta.columns, alias_map, "donor")
             sample_col = resolve_column(obs_meta.columns, alias_map, "sample_id")
+            dose_col = resolve_column(obs_meta.columns, alias_map, "dose")
+            time_col = resolve_column(obs_meta.columns, alias_map, "time")
             if donor_col is not None:
                 summary.donor_metadata_present = True
-
         inferred_ct = default_cell_type
         if cell_type_from_filename and inferred_ct is None:
             inferred_ct = _cell_type_from_name(path.name)
-
         for i, original_id in enumerate(obs_ids):
             cell_type = inferred_ct or "unknown"
             perturbation = infer_perturbation_from_index(original_id)
             donor = None
-            sample_id = inferred_ct or path.stem
+            sample_id = None
+            dose = None
+            time = None
+            if sample_id_fallback == "filename_declared":
+                sample_id = inferred_ct or path.stem
             if obs_meta is not None:
                 if cell_type_col:
                     cell_type = str(obs_meta.iloc[i][cell_type_col])
                 if pert_col:
                     perturbation = str(obs_meta.iloc[i][pert_col])
                 if donor_col:
-                    raw_donor = obs_meta.iloc[i][donor_col]
-                    donor = None if pd.isna(raw_donor) else str(raw_donor)
+                    donor = _optional_meta(obs_meta.iloc[i][donor_col])
                 if sample_col:
                     sample_id = str(obs_meta.iloc[i][sample_col])
-            observation_id = f"{study}|{sample_id}|{original_id}"
+                if dose_col:
+                    dose = _optional_float(obs_meta.iloc[i][dose_col])
+                if time_col:
+                    time = _optional_float(obs_meta.iloc[i][time_col])
+            observation_id = f"{study}|{sample_id}|{original_id}|{path.name}|{i}"
+            identity_key = f"{study}|{sample_id}|{original_id}"
             rec = ExperimentRecord(
                 observation_id=observation_id,
                 study=study,
                 species=species,
                 cell_type=cell_type,
                 perturbation_id=perturbation,
-                dose=None,
-                dose_unit="none",
-                time=None,
-                time_unit="none",
+                dose=dose,
+                dose_unit="none" if dose is None else "unknown",
+                time=time,
+                time_unit="none" if time is None else "unknown",
                 assay=assay,
                 original_obs_id=original_id,
                 sample_id=sample_id,
                 donor=donor,
                 source_file=str(path),
+                matrix_kind=summary.matrix_kind,
             )
             rec = rec.__class__(**{**asdict(rec), "condition_id": rec.condition_key()})
-            vector = np.asarray(matrix[i], dtype=np.float64)
-            if observation_id in key_to_vector:
-                prev = key_to_vector[observation_id]
-                if prev.shape == vector.shape and np.allclose(prev, vector, equal_nan=True):
+            vector = np.asarray(aligned[i], dtype=np.float64)
+            if identity_key in key_to_vector:
+                prev = key_to_vector[identity_key]
+                if prev.shape == vector.shape and np.allclose(prev, vector, equal_nan=False):
                     summary.n_deduplicated += 1
                     continue
                 summary.n_conflicts += 1
-                summary.conflict_keys.append(observation_id)
+                summary.conflict_keys.append(identity_key)
+                conflict_table.append(identity_key)
+                if conflict_policy == "fail_closed":
+                    raise SchemaError(f"numeric/metadata conflict for {identity_key}; official import is fail-closed")
                 summary.n_dropped += 1
                 summary.dropped_reasons["numeric_conflict"] = summary.dropped_reasons.get("numeric_conflict", 0) + 1
                 continue
-            key_to_vector[observation_id] = vector
-            key_to_index[observation_id] = len(records)
+            key_to_vector[identity_key] = vector
             records.append(rec)
-            matrices.append(vector.reshape(1, -1))
+            rows.append(vector.reshape(1, -1))
 
     if not records:
         raise SchemaError("import produced zero observations")
-    genes = _intersect_genes(gene_sets)
-    aligned = []
-    for mat, gene_list in zip(_chunk_matrices(matrices, gene_sets), gene_sets):
-        indexer = [gene_list.index(g) for g in genes]
-        aligned.append(mat[:, indexer])
-    full = np.vstack(aligned) if aligned else np.zeros((0, 0))
-    # Rebuild matrix in record order. matrices was appended per kept row.
-    full = np.vstack(matrices)
-    # If gene lists differ, re-read would be needed; require identical genes.
-    unique_gene_lists = {tuple(g) for g in gene_sets}
-    if len(unique_gene_lists) != 1:
-        common = _intersect_genes(gene_sets)
-        rebuilt = []
-        offset = 0
-        # We stored full-width vectors; re-import per file for safety.
-        rebuilt_records = []
-        rebuilt_rows = []
-        for path, gene_list in zip(file_list, gene_sets):
-            matrix, obs_ids, _genes = load_table(path)
-            col_index = {g: j for j, g in enumerate(gene_list)}
-            indexer = [col_index[g] for g in common]
-            for rec in records:
-                if rec.source_file != str(path):
-                    continue
-                local = rec.original_obs_id
-                try:
-                    row_i = obs_ids.index(local)
-                except ValueError:
-                    continue
-                rebuilt_rows.append(matrix[row_i, indexer])
-                rebuilt_records.append(rec)
-        records = rebuilt_records
-        full = np.vstack(rebuilt_rows) if rebuilt_rows else np.zeros((0, len(common)))
-        genes = common
-        summary.notes.append("aligned_to_gene_intersection")
-    else:
-        genes = gene_sets[0]
-        full = np.vstack(matrices)
-
-    kind = infer_matrix_kind(full)
-    summary.matrix_kind = kind
+    full = np.vstack(rows)
+    genes = common
     for rec_i, rec in enumerate(records):
-        records[rec_i] = rec.__class__(**{**asdict(rec), "matrix_kind": kind})
+        records[rec_i] = rec.__class__(**{**asdict(rec), "matrix_kind": summary.matrix_kind})
         validate_experiment_record(asdict(records[rec_i]), where=f"records[{rec_i}]")
     summary.n_kept = len(records)
     summary.gene_order_hash = gene_order_hash(genes)
     cond: dict[str, list[int]] = {}
     for i, rec in enumerate(records):
         cond.setdefault(rec.condition_key(), []).append(i)
-    if kind == "unknown":
+    if summary.matrix_kind == "unknown":
         summary.notes.append("matrix_kind_unknown_not_eligible_for_official_scoring")
     if not summary.donor_metadata_present:
         summary.notes.append("donor_metadata_missing_recorded_as_null")
+    if conflict_table:
+        summary.notes.append(f"conflicts={len(conflict_table)}")
     return CanonicalStore(matrix=full, records=records, gene_ids=genes, summary=summary, condition_to_rows=cond)
 
 
@@ -275,12 +352,7 @@ def _intersect_genes(gene_sets: list[list[str]]) -> list[str]:
         common &= set(genes)
     if not common:
         raise SchemaError("empty gene intersection across imported files")
-    # preserve first-file order
     return [g for g in gene_sets[0] if g in common]
-
-
-def _chunk_matrices(matrices: list[np.ndarray], gene_sets: list[list[str]]) -> list[np.ndarray]:
-    return matrices
 
 
 def _cell_type_from_name(name: str) -> Optional[str]:

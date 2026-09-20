@@ -34,5 +34,5 @@ def replay_visible_trace(run_dir: Path) -> dict[str, Any]:
             }
             for e in purchases
         ],
-        "note": "Replay restores visible artifacts and scores; external LLM trajectories are not bitwise reproducible.",
+        "note": "trace-summary of visible events.jsonl. This does not restore artifacts, resume a run, or reproduce LLM trajectories.",
     }
