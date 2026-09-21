@@ -1,8 +1,8 @@
 agent: random_query
 mode: local_trusted_debug
 allow_unqualified: true
-public_dir: runs/episodes/synthetic_pilot_001/public
-private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+public_dir: data/episodes/synthetic_pilot_001/public
+private_manifest: data/episodes/synthetic_pilot_001/private/manifest.json
 agent_kwargs:
   seed: 0
   sigma: 0.15

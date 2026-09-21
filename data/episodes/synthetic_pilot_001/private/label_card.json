@@ -1,0 +1,16 @@
+{
+  "label_name": "effect_direction_proxy",
+  "profile": "effect_proxy_v1",
+  "tau": 0.1,
+  "effect_unit": "log1p_mean_diff",
+  "aggregation": "cell_weighted",
+  "distribution": {
+    "up": 7,
+    "neutral": 5
+  },
+  "notes": [
+    "label_name=effect_direction_proxy",
+    "neutral means |delta| <= tau, not significant DE and not biological no-change",
+    "tau=0.1 log1p units is an engineering threshold frozen from development"
+  ]
+}

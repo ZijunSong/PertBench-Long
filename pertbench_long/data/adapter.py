@@ -188,7 +188,7 @@ def import_tables(
 
     file_list = [Path(p) for p in files]
     summary = ImportSummary()
-    summary.source_files = [str(p) for p in file_list]
+    summary.source_files = [Path(p).name for p in file_list]
     loaded: list[dict[str, Any]] = []
     gene_sets: list[list[str]] = []
     declared_kinds: list[str] = []

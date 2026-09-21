@@ -1,9 +1,10 @@
 study: kang_pbmc_ifn_public
 data_release_id: local_kang_csv
-pbmc_csv_dir: /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
+pbmc_csv_dir: data/releases/kang_pbmc_ifn_public
 moa_root: /data/ppnm/data/PertDiffBench/data_ori/fig2/task1_unseenMOA
 temporal_root: /data/ppnm/data/PertDiffBench/data_ori/fig4
 roots:
+  - data/releases/kang_pbmc_ifn_public
   - /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
   - /data/ppnm/data/PertDiffBench/data_ori/fig1/raw_task1
   - /data/ppnm/data/PertDiffBench/data_ori/fig4

@@ -1,8 +1,8 @@
 config_version: "1.0"
 mode: isolated_eval
 agent: llm_adaptive_query
-public_dir: runs/episodes/synthetic_pilot_001/public
-private_manifest: runs/episodes/synthetic_pilot_001/private/manifest.json
+public_dir: data/episodes/synthetic_pilot_001/public
+private_manifest: data/episodes/synthetic_pilot_001/private/manifest.json
 output: runs/eval/api_model
 model:
   backend: openai_compatible_chat

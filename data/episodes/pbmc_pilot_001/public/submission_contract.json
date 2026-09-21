@@ -1,0 +1,91 @@
+{
+  "schema_version": "submission_contract_v1",
+  "effect_unit": "log1p_mean_diff",
+  "predictions": {
+    "relative_path": "outputs/predictions.parquet",
+    "container_path": "/workspace/outputs/predictions.parquet",
+    "required_columns": [
+      "target_id",
+      "gene_id",
+      "predicted_effect",
+      "p_down",
+      "p_neutral",
+      "p_up"
+    ],
+    "coverage": "exactly one row for every public target_id \u00d7 gene_id from genes_v1.tsv",
+    "predicted_effect": "finite float in canonical unit log1p_mean_diff",
+    "probabilities": {
+      "columns": [
+        "p_down",
+        "p_neutral",
+        "p_up"
+      ],
+      "range": [
+        0.0,
+        1.0
+      ],
+      "sum_tolerance": 1e-06,
+      "silent_renormalization": false
+    },
+    "rejected": [
+      "NaN",
+      "Inf",
+      "duplicate target_id\u00d7gene_id",
+      "missing rows",
+      "unknown ids"
+    ]
+  },
+  "claims": {
+    "relative_path": "outputs/claims.json",
+    "container_path": "/workspace/outputs/claims.json",
+    "required_claim_keys": [
+      "claim_id",
+      "scope",
+      "statement",
+      "evidence_ids",
+      "prediction_entries",
+      "limitations"
+    ],
+    "minimum_example": {
+      "schema_version": "1.0",
+      "claims": [
+        {
+          "claim_id": "c1",
+          "scope": {
+            "targets": [
+              "t_01"
+            ]
+          },
+          "statement": "public example claim; replace with the model's actual statement",
+          "evidence_ids": [
+            "ev_initial_001"
+          ],
+          "prediction_entries": [
+            {
+              "target_id": "t_01",
+              "gene_id": "<gene_id from genes_v1.tsv>"
+            }
+          ],
+          "limitations": [
+            "example"
+          ]
+        }
+      ]
+    }
+  },
+  "snapshots": {
+    "before_purchase": "call save_prediction_snapshot for the current evidence version before request_experiment",
+    "submit": "submit freezes the final trusted snapshot; a text claim of being done is not a receipt"
+  },
+  "paths": {
+    "accepted": [
+      "outputs/predictions.parquet",
+      "/workspace/outputs/predictions.parquet"
+    ],
+    "rejected": [
+      "host absolute paths",
+      "../private",
+      "symlinks that leave the workspace"
+    ]
+  }
+}

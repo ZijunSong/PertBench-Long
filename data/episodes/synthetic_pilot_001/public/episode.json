@@ -1,0 +1,122 @@
+{
+  "schema_version": "1.0",
+  "episode_id": "synthetic_pilot_001",
+  "protocol": "within_study_celltype_ood_v1",
+  "protocol_version": "1.0",
+  "label_profile": "effect_proxy_v1",
+  "objective": "Predict held-out IFN responses using observed data and at most two additional condition bundles.",
+  "initial_evidence": [
+    "ev_initial_001"
+  ],
+  "reference_evidence": [
+    "ev_controls_001"
+  ],
+  "candidate_experiments": [
+    {
+      "experiment_id": "q_01",
+      "cell_type": "CD14+Mono",
+      "perturbation": "IFN",
+      "cost": 1,
+      "dose": null,
+      "dose_unit": "none",
+      "time": null,
+      "time_unit": "none",
+      "description": ""
+    },
+    {
+      "experiment_id": "q_02",
+      "cell_type": "Dendritic",
+      "perturbation": "IFN",
+      "cost": 1,
+      "dose": null,
+      "dose_unit": "none",
+      "time": null,
+      "time_unit": "none",
+      "description": ""
+    },
+    {
+      "experiment_id": "q_03",
+      "cell_type": "FCGR3A+Mono",
+      "perturbation": "IFN",
+      "cost": 1,
+      "dose": null,
+      "dose_unit": "none",
+      "time": null,
+      "time_unit": "none",
+      "description": ""
+    }
+  ],
+  "targets": [
+    {
+      "target_id": "t_01",
+      "cell_type": "B",
+      "perturbation": "IFN",
+      "dose": null,
+      "dose_unit": "none",
+      "time": null,
+      "time_unit": "none"
+    },
+    {
+      "target_id": "t_02",
+      "cell_type": "NK",
+      "perturbation": "IFN",
+      "dose": null,
+      "dose_unit": "none",
+      "time": null,
+      "time_unit": "none"
+    }
+  ],
+  "target_control_available": true,
+  "gene_universe_artifact": "genes_v1.tsv",
+  "experimental_budget": 2,
+  "cost_unit": "credit",
+  "resource_profile": "cpu_pilot_v1",
+  "data_release_id": "synthetic_v1",
+  "public_split_fingerprint": "40f6bc8ddad073e646b0fbd8f483546110fa087ef5e76e2d68d2f389288192f5",
+  "public_scoring_fingerprint": "920537ec06a753208839765e39b7f85a62e801b530aa342e2e1f9d4697e11913",
+  "reference_policy": "target_control_available_v1",
+  "gene_panel_policy": "frozen_predefined",
+  "canonical_units": {
+    "effect": "log1p_mean_diff",
+    "cost": "credit"
+  },
+  "artifact_metadata": {
+    "initial": {
+      "artifact_id": "ev_initial_001",
+      "relative_path": "evidence/ev_initial_001.h5ad",
+      "sha256": "e1f49842cc535c462b46d32b4385c6d86ca1b6c5857dd1b7f292220523fea19d",
+      "bytes": 42504,
+      "condition_ids": [
+        "synthetic_pbmc_v1|synthetic|CD4T|IFN|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|CD8T|IFN|NA|NA|scrna"
+      ]
+    },
+    "controls": {
+      "artifact_id": "ev_controls_001",
+      "relative_path": "evidence/ev_controls_001.h5ad",
+      "sha256": "5281b8f5573ce6c3d7a1a63aff00162ecbd435ce3d0d0631096c24fdd246fcc5",
+      "bytes": 56688,
+      "condition_ids": [
+        "synthetic_pbmc_v1|synthetic|CD4T|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|CD8T|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|CD14+Mono|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|Dendritic|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|B|Control|NA|NA|scrna",
+        "synthetic_pbmc_v1|synthetic|NK|Control|NA|NA|scrna"
+      ]
+    },
+    "public_bytes_fingerprint": "3d9fc4e3d34249b1bf58028ffd97f5d17b59af92a94bed5f6f10304818c9285d",
+    "gene_universe_sha256": "d3ce13d9d44b31c099247a218ddca4d02f48283c65725e846beafec515235745",
+    "submission_contract_sha256": "511dce8234a14b3bee876a83dd398ee0c70c028c7ad0c48705b4d334b4f87e45",
+    "declared_public_evidence": [
+      "ev_initial_001.h5ad",
+      "ev_controls_001.h5ad"
+    ]
+  },
+  "related_family": "synthetic_pbmc_v1:celltype_ood_ifn",
+  "synthetic": true,
+  "notes": [
+    "SYNTHETIC fixture; not for scientific conclusions"
+  ]
+}

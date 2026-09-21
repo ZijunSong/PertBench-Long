@@ -4,7 +4,8 @@
 - **Species:** human (from dataset convention, not a per-cell metadata column)
 - **Assay:** scRNA-seq (cells × genes tables)
 - **Perturbation:** IFN vs Control, encoded in barcode suffix `-stimulated` / `-control`
-- **Local source:** `/data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus/*.csv`
+- **Shipped source:** `data/releases/kang_pbmc_ifn_public.tar.gz` (extract with `pertbench-long unpack-data`)
+- **Local fallback:** `/data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus/*.csv`
 - **Processing history:** unknown beyond “already numeric, looks like log1p”. Original counts were not found. HVG scripts in PertDiffBench apply `normalize_total`+`log1p` again and are not used here.
 - **Matrix kind:** `log1p` (inferred). Official scoring used `effect_proxy_v1_existing_log1p` (no second log1p).
 - **Donor:** null. `replicate_de_v1` disabled.

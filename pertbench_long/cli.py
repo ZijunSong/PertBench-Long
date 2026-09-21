@@ -25,6 +25,60 @@ DOCUMENTED_RUN_DEFAULTS = {
     "output": "runs",
 }
 
+PBMC_RELEASE_NAME = "kang_pbmc_ifn_public"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def resolve_user_path(raw: str | Path | None, *, config_path: Path | None = None) -> Path | None:
+    if raw is None:
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    candidates = []
+    if config_path is not None:
+        candidates.append((Path(config_path).parent / path).resolve())
+    candidates.append((Path.cwd() / path).resolve())
+    candidates.append((repo_root() / path).resolve())
+    for item in candidates:
+        if item.exists():
+            return item
+    return (Path.cwd() / path).resolve()
+
+
+def unpack_release_data(*, force: bool = False) -> Path:
+    dest_parent = repo_root() / "data" / "releases"
+    dest = dest_parent / PBMC_RELEASE_NAME
+    marker = dest / "task1_train_B_exp.csv"
+    if marker.exists() and not force:
+        return dest
+    archive = dest_parent / f"{PBMC_RELEASE_NAME}.tar.gz"
+    if not archive.exists():
+        raise ConfigError(f"release archive is missing: {archive}")
+    import tarfile
+
+    dest_parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as handle:
+        handle.extractall(dest_parent)
+    if not marker.exists():
+        raise ConfigError(f"unpack finished but {marker.name} is still missing")
+    return dest
+
+
+def ensure_pbmc_csv_dir(raw: str | Path | None, *, config_path: Path | None = None) -> Path:
+    path = resolve_user_path(raw, config_path=config_path)
+    if path is not None and path.exists() and any(path.glob("task1_*_exp.csv")):
+        return path
+    unpacked = unpack_release_data()
+    if unpacked.exists() and any(unpacked.glob("task1_*_exp.csv")):
+        return unpacked
+    if path is None:
+        raise ConfigError("pbmc_csv_dir is required")
+    return path
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -84,6 +138,9 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="Resume an interrupted run with the same run ID")
     resume.add_argument("--run", required=True)
     resume.add_argument("--config", default=None)
+
+    unpack = sub.add_parser("unpack-data", help="Extract the shipped PBMC CSV archive into data/releases/")
+    unpack.add_argument("--force", action="store_true")
 
     doctor = sub.add_parser("doctor", help="Check local install without downloading models")
     doctor.add_argument("--config", default=None)
@@ -152,12 +209,21 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     if not args.config:
         raise ConfigError("--config is required")
     cfg = _load_yaml(Path(args.config))
+    config_path = Path(args.config)
+    if cfg.get("pbmc_csv_dir"):
+        cfg["pbmc_csv_dir"] = str(ensure_pbmc_csv_dir(cfg["pbmc_csv_dir"], config_path=config_path))
     roots = cfg.get("roots")
+    if roots:
+        roots = [str(resolve_user_path(item, config_path=config_path) or item) for item in roots]
     inventory = build_inventory(roots)
     if cfg.get("moa_root"):
-        inventory.setdefault("extensions", {})["moa"] = audit_moa_root(Path(cfg["moa_root"]))
+        moa = resolve_user_path(cfg["moa_root"], config_path=config_path)
+        if moa is not None:
+            inventory.setdefault("extensions", {})["moa"] = audit_moa_root(moa)
     if cfg.get("temporal_root"):
-        inventory.setdefault("extensions", {})["temporal"] = audit_temporal_root(Path(cfg["temporal_root"]))
+        temporal = resolve_user_path(cfg["temporal_root"], config_path=config_path)
+        if temporal is not None:
+            inventory.setdefault("extensions", {})["temporal"] = audit_temporal_root(temporal)
     sample = Path(cfg["pbmc_csv_dir"]) / "task1_train_B_exp.csv" if cfg.get("pbmc_csv_dir") else None
     declared = cfg.get("matrix_kind")
     if sample and sample.exists():
@@ -199,7 +265,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
 
     if not cfg.get("pbmc_csv_dir"):
         raise ConfigError("pbmc_csv_dir is required in the config")
-    csv_dir = Path(cfg["pbmc_csv_dir"])
+    csv_dir = ensure_pbmc_csv_dir(cfg["pbmc_csv_dir"], config_path=Path(args.config) if args.config else None)
     files = sorted(csv_dir.glob("task1_*_exp.csv"))
     if not files:
         print("required PBMC CSVs missing; synthetic episode was not substituted for a real benchmark", file=sys.stderr)
@@ -438,6 +504,13 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     return _exit_for_outcome(result.get("outcome"))
 
 
+def _cmd_unpack_data(args: argparse.Namespace) -> int:
+    dest = unpack_release_data(force=bool(getattr(args, "force", False)))
+    files = sorted(p.name for p in dest.glob("task1_*_exp.csv"))
+    print(json.dumps({"status": "ok", "csv_dir": str(dest), "n_csv": len(files), "files": files}, indent=2))
+    return EXIT_OK
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     info = {"python": sys.version.split()[0], "package": __version__, "schema": SCHEMA_VERSION}
     try:
@@ -457,6 +530,16 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         except Exception:
             extras[name] = "missing"
     info["extras"] = extras
+    archive = repo_root() / "data" / "releases" / f"{PBMC_RELEASE_NAME}.tar.gz"
+    extracted = repo_root() / "data" / "releases" / PBMC_RELEASE_NAME / "task1_train_B_exp.csv"
+    episodes = repo_root() / "data" / "episodes"
+    info["data_release"] = {
+        "archive": str(archive) if archive.exists() else None,
+        "extracted": extracted.exists(),
+        "synthetic_episode": (episodes / "synthetic_pilot_001" / "public" / "episode.json").exists(),
+        "pbmc_episode": (episodes / "pbmc_pilot_001" / "public" / "episode.json").exists(),
+        "unpack_hint": None if extracted.exists() or not archive.exists() else "pertbench-long unpack-data",
+    }
     print(json.dumps(info, indent=2))
     return EXIT_OK
 
@@ -553,6 +636,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "replay": lambda: _cmd_replay(args),
         "trace-summary": lambda: _cmd_replay(args),
         "resume": lambda: _cmd_resume(args),
+        "unpack-data": lambda: _cmd_unpack_data(args),
         "doctor": lambda: _cmd_doctor(args),
         "doctor-model": lambda: _cmd_doctor_model(args),
         "suite": lambda: _cmd_suite(args),

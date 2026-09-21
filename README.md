@@ -26,7 +26,7 @@ pertbench-long doctor-model --config configs/pertbench_long/local_openai_compati
 # 需要：已启动的 openai-compatible 服务、声明的 served model name、
 # isolated_eval 下可用的分析镜像 digest。缺任一项都会非零退出，而不是假成功。
 pertbench-long run --config configs/pertbench_long/local_openai_compatible.yaml
-pertbench-long score --run RUN_DIR --private-manifest runs/episodes/synthetic_pilot_001/private/manifest.json
+pertbench-long score --run RUN_DIR --private-manifest data/episodes/synthetic_pilot_001/private/manifest.json
 pertbench-long summarize --runs runs/eval --group-by model,policy,budget,isolation_qualified,scoring_track --output runs/eval/summary.json
 ```
 
@@ -35,14 +35,28 @@ pertbench-long summarize --runs runs/eval --group-by model,policy,budget,isolati
 
 本仓库**没有**在作者环境完成真实开源模型或付费 API 的 episode 闭环。那一项保持未验证。
 
+## 数据
+
+仓库自带：
+
+- `data/releases/kang_pbmc_ifn_public.tar.gz`：PBMC IFN 14 张源表（约 15 MiB；解压后约 303 MiB）
+- `data/episodes/synthetic_pilot_001` 与 `data/episodes/pbmc_pilot_001`：已构建的 public/private 包
+
+```bash
+pertbench-long unpack-data
+pertbench-long inspect-data --config configs/pertbench_long/pbmc_data.yaml
+```
+
+未打包 MOA（约 8 GiB）和 temporal/fig1。synthetic 不需要这套 CSV。
+
 ## 真实 PBMC
 
 处理历史在 dataset card 中为 **unknown**。`configs/pertbench_long/pbmc_pilot.yaml` 声明 `matrix_kind: unknown`，构建结果走 **diagnostic** 轨道，不能与 official 分数表合并。
 
 ```bash
 pertbench-long inspect-data --config configs/pertbench_long/pbmc_data.yaml
-pertbench-long build-episodes --config configs/pertbench_long/pbmc_pilot.yaml --fixture pbmc --output runs/episodes
-pertbench-long validate --manifest runs/episodes/pbmc_pilot_001/private/manifest.json --check-artifacts
+pertbench-long build-episodes --config configs/pertbench_long/pbmc_pilot.yaml --fixture pbmc --output data/episodes
+pertbench-long validate --manifest data/episodes/pbmc_pilot_001/private/manifest.json --check-artifacts
 ```
 
 2026-09-20 的 CPU baseline 表（O=CD4T/CD8T IFN，Q=三个髓系 IFN，T=B/NK IFN，B=2，64 个 O+C 基因）是修复前、按数值范围当作 log1p 的 exploratory 记录，**本轮未重跑，不能当 official 生物学能力**：

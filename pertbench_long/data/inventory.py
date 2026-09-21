@@ -9,7 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 DEFAULT_CANDIDATE_ROOTS = [
+    str(_REPO_ROOT / "data" / "releases" / "kang_pbmc_ifn_public"),
     "/data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus",
     "/data/ppnm/data/PertDiffBench/data_ori/fig1/raw_task1",
     "/data/ppnm/data/PertDiffBench/data/fig1_task1",
@@ -73,7 +76,7 @@ def build_inventory(
             if path.is_file() and path.suffix.lower() in {".csv", ".h5ad", ".txt", ".tsv"}:
                 files.append(inspect_path(path))
     required = {
-        "pbmc_pilot_csv_dir": "/data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus",
+        "pbmc_pilot_csv_dir": str(_REPO_ROOT / "data" / "releases" / "kang_pbmc_ifn_public"),
         "expected_files": [
             "task1_train_B_exp.csv",
             "task1_train_CD4T_exp.csv",

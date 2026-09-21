@@ -1,0 +1,19 @@
+{
+  "status": "ok",
+  "protocol": "within_study_celltype_ood_v1",
+  "protocol_is_not": [
+    "donor-held-out; shared controls follow donor rules",
+    "study-held-out"
+  ],
+  "n_observed_obs": 3668,
+  "n_queryable_obs": 3579,
+  "n_target_obs": 1639,
+  "n_control_obs": 8007,
+  "leaks": [],
+  "development_target_overlap": [],
+  "flags": [
+    "single_public_study_fold_related"
+  ],
+  "public_source_data": true,
+  "fingerprint": "6c9df3776788b6d68479c79f250faf4a32d8e20f18fe5ed8e52b41067857c66a"
+}

@@ -1,0 +1,385 @@
+{
+  "schema_version": "1.0",
+  "episode_id": "synthetic_pilot_001",
+  "public": {
+    "schema_version": "1.0",
+    "episode_id": "synthetic_pilot_001",
+    "protocol": "within_study_celltype_ood_v1",
+    "protocol_version": "1.0",
+    "label_profile": "effect_proxy_v1",
+    "objective": "Predict held-out IFN responses using observed data and at most two additional condition bundles.",
+    "initial_evidence": [
+      "ev_initial_001"
+    ],
+    "reference_evidence": [
+      "ev_controls_001"
+    ],
+    "candidate_experiments": [
+      {
+        "experiment_id": "q_01",
+        "cell_type": "CD14+Mono",
+        "perturbation": "IFN",
+        "cost": 1,
+        "dose": null,
+        "dose_unit": "none",
+        "time": null,
+        "time_unit": "none",
+        "description": ""
+      },
+      {
+        "experiment_id": "q_02",
+        "cell_type": "Dendritic",
+        "perturbation": "IFN",
+        "cost": 1,
+        "dose": null,
+        "dose_unit": "none",
+        "time": null,
+        "time_unit": "none",
+        "description": ""
+      },
+      {
+        "experiment_id": "q_03",
+        "cell_type": "FCGR3A+Mono",
+        "perturbation": "IFN",
+        "cost": 1,
+        "dose": null,
+        "dose_unit": "none",
+        "time": null,
+        "time_unit": "none",
+        "description": ""
+      }
+    ],
+    "targets": [
+      {
+        "target_id": "t_01",
+        "cell_type": "B",
+        "perturbation": "IFN",
+        "dose": null,
+        "dose_unit": "none",
+        "time": null,
+        "time_unit": "none"
+      },
+      {
+        "target_id": "t_02",
+        "cell_type": "NK",
+        "perturbation": "IFN",
+        "dose": null,
+        "dose_unit": "none",
+        "time": null,
+        "time_unit": "none"
+      }
+    ],
+    "target_control_available": true,
+    "gene_universe_artifact": "genes_v1.tsv",
+    "experimental_budget": 2,
+    "cost_unit": "credit",
+    "resource_profile": "cpu_pilot_v1",
+    "data_release_id": "synthetic_v1",
+    "public_split_fingerprint": "40f6bc8ddad073e646b0fbd8f483546110fa087ef5e76e2d68d2f389288192f5",
+    "public_scoring_fingerprint": "920537ec06a753208839765e39b7f85a62e801b530aa342e2e1f9d4697e11913",
+    "reference_policy": "target_control_available_v1",
+    "gene_panel_policy": "frozen_predefined",
+    "canonical_units": {
+      "effect": "log1p_mean_diff",
+      "cost": "credit"
+    },
+    "artifact_metadata": {
+      "initial": {
+        "artifact_id": "ev_initial_001",
+        "relative_path": "evidence/ev_initial_001.h5ad",
+        "sha256": "e1f49842cc535c462b46d32b4385c6d86ca1b6c5857dd1b7f292220523fea19d",
+        "bytes": 42504,
+        "condition_ids": [
+          "synthetic_pbmc_v1|synthetic|CD4T|IFN|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|CD8T|IFN|NA|NA|scrna"
+        ]
+      },
+      "controls": {
+        "artifact_id": "ev_controls_001",
+        "relative_path": "evidence/ev_controls_001.h5ad",
+        "sha256": "5281b8f5573ce6c3d7a1a63aff00162ecbd435ce3d0d0631096c24fdd246fcc5",
+        "bytes": 56688,
+        "condition_ids": [
+          "synthetic_pbmc_v1|synthetic|CD4T|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|CD8T|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|CD14+Mono|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|Dendritic|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|B|Control|NA|NA|scrna",
+          "synthetic_pbmc_v1|synthetic|NK|Control|NA|NA|scrna"
+        ]
+      },
+      "public_bytes_fingerprint": "3d9fc4e3d34249b1bf58028ffd97f5d17b59af92a94bed5f6f10304818c9285d",
+      "gene_universe_sha256": "d3ce13d9d44b31c099247a218ddca4d02f48283c65725e846beafec515235745",
+      "submission_contract_sha256": "511dce8234a14b3bee876a83dd398ee0c70c028c7ad0c48705b4d334b4f87e45",
+      "declared_public_evidence": [
+        "ev_initial_001.h5ad",
+        "ev_controls_001.h5ad"
+      ]
+    },
+    "related_family": "synthetic_pbmc_v1:celltype_ood_ifn",
+    "synthetic": true,
+    "notes": [
+      "SYNTHETIC fixture; not for scientific conclusions"
+    ]
+  },
+  "observed_condition_ids": [
+    "synthetic_pbmc_v1|synthetic|CD4T|IFN|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|CD8T|IFN|NA|NA|scrna"
+  ],
+  "queryable_condition_ids": [
+    "synthetic_pbmc_v1|synthetic|CD14+Mono|IFN|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|Dendritic|IFN|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|IFN|NA|NA|scrna"
+  ],
+  "target_condition_ids": [
+    "synthetic_pbmc_v1|synthetic|B|IFN|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|NK|IFN|NA|NA|scrna"
+  ],
+  "control_condition_ids": [
+    "synthetic_pbmc_v1|synthetic|CD4T|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|CD8T|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|CD14+Mono|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|Dendritic|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|B|Control|NA|NA|scrna",
+    "synthetic_pbmc_v1|synthetic|NK|Control|NA|NA|scrna"
+  ],
+  "observation_ids_by_role": {
+    "O": [
+      "synthetic_pbmc_v1|CD4T|CD4T-000-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-001-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-002-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-003-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-004-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-005-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-006-stimulated",
+      "synthetic_pbmc_v1|CD4T|CD4T-007-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-000-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-001-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-002-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-003-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-004-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-005-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-006-stimulated",
+      "synthetic_pbmc_v1|CD8T|CD8T-007-stimulated"
+    ],
+    "Q": [
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-000-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-001-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-002-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-003-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-004-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-005-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-006-stimulated",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-007-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-000-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-001-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-002-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-003-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-004-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-005-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-006-stimulated",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-007-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-000-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-001-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-002-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-003-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-004-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-005-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-006-stimulated",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-007-stimulated"
+    ],
+    "T": [
+      "synthetic_pbmc_v1|B|B-000-stimulated",
+      "synthetic_pbmc_v1|B|B-001-stimulated",
+      "synthetic_pbmc_v1|B|B-002-stimulated",
+      "synthetic_pbmc_v1|B|B-003-stimulated",
+      "synthetic_pbmc_v1|B|B-004-stimulated",
+      "synthetic_pbmc_v1|B|B-005-stimulated",
+      "synthetic_pbmc_v1|B|B-006-stimulated",
+      "synthetic_pbmc_v1|B|B-007-stimulated",
+      "synthetic_pbmc_v1|NK|NK-000-stimulated",
+      "synthetic_pbmc_v1|NK|NK-001-stimulated",
+      "synthetic_pbmc_v1|NK|NK-002-stimulated",
+      "synthetic_pbmc_v1|NK|NK-003-stimulated",
+      "synthetic_pbmc_v1|NK|NK-004-stimulated",
+      "synthetic_pbmc_v1|NK|NK-005-stimulated",
+      "synthetic_pbmc_v1|NK|NK-006-stimulated",
+      "synthetic_pbmc_v1|NK|NK-007-stimulated"
+    ],
+    "C": [
+      "synthetic_pbmc_v1|CD4T|CD4T-000-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-001-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-002-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-003-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-004-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-005-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-006-control",
+      "synthetic_pbmc_v1|CD4T|CD4T-007-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-000-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-001-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-002-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-003-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-004-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-005-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-006-control",
+      "synthetic_pbmc_v1|CD8T|CD8T-007-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-000-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-001-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-002-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-003-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-004-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-005-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-006-control",
+      "synthetic_pbmc_v1|CD14+Mono|CD14+Mono-007-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-000-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-001-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-002-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-003-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-004-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-005-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-006-control",
+      "synthetic_pbmc_v1|Dendritic|Dendritic-007-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-000-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-001-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-002-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-003-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-004-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-005-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-006-control",
+      "synthetic_pbmc_v1|FCGR3A+Mono|FCGR3A+Mono-007-control",
+      "synthetic_pbmc_v1|B|B-000-control",
+      "synthetic_pbmc_v1|B|B-001-control",
+      "synthetic_pbmc_v1|B|B-002-control",
+      "synthetic_pbmc_v1|B|B-003-control",
+      "synthetic_pbmc_v1|B|B-004-control",
+      "synthetic_pbmc_v1|B|B-005-control",
+      "synthetic_pbmc_v1|B|B-006-control",
+      "synthetic_pbmc_v1|B|B-007-control",
+      "synthetic_pbmc_v1|NK|NK-000-control",
+      "synthetic_pbmc_v1|NK|NK-001-control",
+      "synthetic_pbmc_v1|NK|NK-002-control",
+      "synthetic_pbmc_v1|NK|NK-003-control",
+      "synthetic_pbmc_v1|NK|NK-004-control",
+      "synthetic_pbmc_v1|NK|NK-005-control",
+      "synthetic_pbmc_v1|NK|NK-006-control",
+      "synthetic_pbmc_v1|NK|NK-007-control"
+    ]
+  },
+  "experiment_id_to_condition": {
+    "q_01": "synthetic_pbmc_v1|synthetic|CD14+Mono|IFN|NA|NA|scrna",
+    "q_02": "synthetic_pbmc_v1|synthetic|Dendritic|IFN|NA|NA|scrna",
+    "q_03": "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|IFN|NA|NA|scrna"
+  },
+  "target_id_to_condition": {
+    "t_01": "synthetic_pbmc_v1|synthetic|B|IFN|NA|NA|scrna",
+    "t_02": "synthetic_pbmc_v1|synthetic|NK|IFN|NA|NA|scrna"
+  },
+  "label_artifact": "labels.parquet",
+  "source_inventory_id": "884edf0a33f000414f215c9564ff1f9e9341c1c34e7db3cfe6e78d12377f6ae5",
+  "split_config": {
+    "o_types": [
+      "CD4T",
+      "CD8T"
+    ],
+    "q_types": [
+      "CD14+Mono",
+      "Dendritic",
+      "FCGR3A+Mono"
+    ],
+    "t_types": [
+      "B",
+      "NK"
+    ]
+  },
+  "scoring_config": {
+    "metric": "direction_score",
+    "tau": 0.1,
+    "label_profile": "effect_proxy_v1",
+    "scoring_track": "official"
+  },
+  "private_data_hash": "4cfd86e832c253bacc58ade12baf5c63c7124d687c16e7e4db671aa0ecf66525",
+  "development_group": "synthetic",
+  "evaluation_group": "synthetic_pilot_001",
+  "gene_ids": [
+    "G1",
+    "G2",
+    "G3",
+    "G4",
+    "G5",
+    "G6"
+  ],
+  "gene_order_hash": "884edf0a33f000414f215c9564ff1f9e9341c1c34e7db3cfe6e78d12377f6ae5",
+  "matrix_kind": "log1p",
+  "donor_metadata_present": false,
+  "provenance": {
+    "import_summary": {
+      "n_source_rows": 112,
+      "n_kept": 112,
+      "n_deduplicated": 0,
+      "n_conflicts": 0,
+      "n_dropped": 0,
+      "matrix_kind": "log1p",
+      "gene_order_hash": "884edf0a33f000414f215c9564ff1f9e9341c1c34e7db3cfe6e78d12377f6ae5",
+      "orientation": "cells_x_genes",
+      "gene_namespace": "symbol_as_provided",
+      "missing_gene_policy": "require_intersection",
+      "conflict_keys": [],
+      "dropped_reasons": {},
+      "source_files": [],
+      "donor_metadata_present": false,
+      "notes": [
+        "SYNTHETIC fixture; not for scientific conclusions"
+      ]
+    },
+    "queryable_artifacts": [
+      {
+        "experiment_id": "q_01",
+        "cell_type": "CD14+Mono",
+        "perturbation": "IFN",
+        "cost": 1,
+        "artifact": {
+          "artifact_id": "ev_q_01",
+          "relative_path": "queryable/ev_q_01.h5ad",
+          "sha256": "80286cb1a4e7b74d8a8ca5701221d44ba6c9f31adc66c2195da87ff3360675fb",
+          "bytes": 42440,
+          "condition_ids": [
+            "synthetic_pbmc_v1|synthetic|CD14+Mono|IFN|NA|NA|scrna"
+          ]
+        }
+      },
+      {
+        "experiment_id": "q_02",
+        "cell_type": "Dendritic",
+        "perturbation": "IFN",
+        "cost": 1,
+        "artifact": {
+          "artifact_id": "ev_q_02",
+          "relative_path": "queryable/ev_q_02.h5ad",
+          "sha256": "1cf958c507dc2dad55b16c23b9d1ac03ee7fbc91e97797c3ce3b4c1206e18d10",
+          "bytes": 42440,
+          "condition_ids": [
+            "synthetic_pbmc_v1|synthetic|Dendritic|IFN|NA|NA|scrna"
+          ]
+        }
+      },
+      {
+        "experiment_id": "q_03",
+        "cell_type": "FCGR3A+Mono",
+        "perturbation": "IFN",
+        "cost": 1,
+        "artifact": {
+          "artifact_id": "ev_q_03",
+          "relative_path": "queryable/ev_q_03.h5ad",
+          "sha256": "f95203fee4894a6fedd9aee9bad4d63d922831f9b93fa97bcd956c7f979c7265",
+          "bytes": 42440,
+          "condition_ids": [
+            "synthetic_pbmc_v1|synthetic|FCGR3A+Mono|IFN|NA|NA|scrna"
+          ]
+        }
+      }
+    ],
+    "study": "synthetic_pbmc_v1"
+  }
+}

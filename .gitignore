@@ -13,6 +13,11 @@ runs/
 private_store/
 *.h5ad
 *.parquet
+data/releases/kang_pbmc_ifn_public/
+!data/episodes/
+!data/episodes/**
+!data/episodes/**/*.h5ad
+!data/episodes/**/*.parquet
 *.sqlite
 .ipc/
 .DS_Store

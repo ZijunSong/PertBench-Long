@@ -1,7 +1,7 @@
 fixture: pbmc
 study: kang_pbmc_ifn_public
 data_release_id: local_kang_csv
-pbmc_csv_dir: /data/ppnm/data/PertDiffBench/data_ori/fig2/task2_unseen_celltype_plus
+pbmc_csv_dir: data/releases/kang_pbmc_ifn_public
 o_types: [CD4T, CD8T]
 q_types: [CD14+Mono, Dendritic, FCGR3A+Mono]
 t_types: [B, NK]
