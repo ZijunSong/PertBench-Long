@@ -1,0 +1,30 @@
+{
+  "dataset_id": "sciplex3",
+  "accession": "GSM4150378",
+  "release_id": "sciplex3_v1",
+  "license": "user_must_confirm_source_license",
+  "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "required_files": ["matrix.h5ad"],
+  "field_map": {
+    "cell_type": "cell_type",
+    "context_id": "cell_type",
+    "perturbation": "perturbation",
+    "dose": "dose",
+    "dose_unit": "dose_unit",
+    "time": "time",
+    "time_unit": "time_unit",
+    "sample_id": "sample_id",
+    "replicate_id": "replicate_id",
+    "batch_id": "batch_id",
+    "control_flag": "is_control"
+  },
+  "software": {
+    "adapter": "pertbench_long.data.adapters.sciplex.import_sciplex",
+    "identity_version": "cid_v1"
+  },
+  "notes": [
+    "Do not treat a third-party processed h5ad as raw counts unless matrix_kind is declared.",
+    "Dose units must come from metadata, not from paper OCR.",
+    "Input is an explicit data directory; /data/ppnm is never implied."
+  ]
+}

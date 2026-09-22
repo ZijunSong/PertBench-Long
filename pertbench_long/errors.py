@@ -106,6 +106,22 @@ class UnsupportedProtocol(PertBenchLongError):
     error_code = "UNSUPPORTED_PROTOCOL"
 
 
+class InsufficientEligible(PertBenchLongError):
+    error_code = "INSUFFICIENT_ELIGIBLE_CONDITIONS"
+
+
+class AmbiguousCondition(PertBenchLongError):
+    error_code = "AMBIGUOUS_CONDITION"
+
+
+class UnknownUnit(PertBenchLongError):
+    error_code = "UNKNOWN_UNIT"
+
+
+class ConditionIdentityError(PertBenchLongError):
+    error_code = "CONDITION_IDENTITY_INVALID"
+
+
 class AgentIncomplete(PertBenchLongError):
     error_code = "AGENT_INCOMPLETE"
 

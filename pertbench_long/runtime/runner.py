@@ -22,7 +22,7 @@ from pertbench_long.errors import (
     TransportError,
 )
 from pertbench_long.evaluation.outcomes import SCIENCE_FAILURES, json_safe, official_aubc, official_direction_score
-from pertbench_long.evaluation.scoring import aubc, score_predictions
+from pertbench_long.evaluation.scoring import aubc, score_continuous_predictions, score_predictions
 from pertbench_long.hashes import sha256_file, sha256_json, sha256_text
 from pertbench_long.oracle.ledger import Ledger
 from pertbench_long.oracle.service import Oracle
@@ -480,6 +480,22 @@ class EpisodeRunner:
         return {"run_dir": str(run_dir), "run_id": ctx["run_id"], **termination}
 
 
+def _score_frame(pred, labels, spec, *, target_ids, gene_ids):
+    scoring = spec.scoring_config or {}
+    if spec.public.label_profile == "lognorm_cellmean_delta_v1" or scoring.get("scoring_profile") == "continuous_effect_aubc_v1":
+        group = {t.target_id: (t.context_id or t.cell_type) for t in spec.public.targets} if spec.public.protocol == "context_campaign_acquisition_v1" else None
+        return score_continuous_predictions(
+            pred,
+            labels,
+            target_ids=target_ids,
+            gene_ids=gene_ids,
+            a_family=float(scoring.get("a_family") or 0.5),
+            group_by_context=group,
+            require_direction=False,
+        )
+    return score_predictions(pred, labels, target_ids=target_ids, gene_ids=gene_ids)
+
+
 def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
     run_dir = Path(run_dir)
     termination = _load_json(run_dir / "termination.json")
@@ -553,7 +569,7 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
             (run_dir / "scores.json").write_text(json.dumps(json_safe(payload), indent=2), encoding="utf-8")
             return payload
         pred = pd.read_parquet(path)
-        snapshots[version] = score_predictions(pred, labels, target_ids=target_ids, gene_ids=gene_ids)
+        snapshots[version] = _score_frame(pred, labels, spec, target_ids=target_ids, gene_ids=gene_ids)
     budget = spec.public.experimental_budget
     scores_by_b: dict[int, float] = {}
     last = None
@@ -581,7 +597,7 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
                 outcome = "integrity_failure"
             else:
                 pred = pd.read_parquet(trusted)
-                final = score_predictions(pred, labels, target_ids=target_ids, gene_ids=gene_ids)
+                final = _score_frame(pred, labels, spec, target_ids=target_ids, gene_ids=gene_ids)
                 final_score = final["direction_score"]
                 scores_by_b[min(budget, int(termination.get("evidence_version", 0)))] = final_score
     else:
@@ -613,6 +629,7 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
             "S0": scores_by_b.get(0),
             "S1": scores_by_b.get(1),
             "S2": scores_by_b.get(2),
+            "scores_curve": {str(i): scores_by_b.get(i) for i in range(0, budget + 1)},
             "delta_S": None,
             "AUBC": curve_aubc,
             "missing_update": missing_update,
@@ -640,6 +657,7 @@ def score_run(run_dir: Path, private_manifest: Path) -> dict[str, Any]:
         "S0": scores_by_b.get(0),
         "S1": scores_by_b.get(1),
         "S2": scores_by_b.get(2),
+        "scores_curve": {str(i): scores_by_b.get(i) for i in range(0, budget + 1)},
         "delta_S": (scores_by_b.get(budget, 0.0) - scores_by_b.get(0, 0.0)) if outcome == "completed" else None,
         "AUBC": curve_aubc,
         "missing_update": missing_update,

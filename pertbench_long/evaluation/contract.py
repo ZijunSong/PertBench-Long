@@ -10,14 +10,15 @@ SUBMISSION_CONTRACT_VERSION = "submission_contract_v1"
 CONTRACT_FILENAME = "submission_contract.json"
 
 
-def public_submission_contract(*, effect_unit: str = "log1p_mean_diff") -> dict[str, Any]:
+def public_submission_contract(*, effect_unit: str = "log1p_mean_diff", require_direction: bool = True) -> dict[str, Any]:
+    columns = list(REQUIRED_COLUMNS) if require_direction else ["target_id", "gene_id", "predicted_effect"]
     return {
         "schema_version": SUBMISSION_CONTRACT_VERSION,
         "effect_unit": effect_unit,
         "predictions": {
             "relative_path": "outputs/predictions.parquet",
             "container_path": "/workspace/outputs/predictions.parquet",
-            "required_columns": list(REQUIRED_COLUMNS),
+            "required_columns": columns,
             "coverage": "exactly one row for every public target_id × gene_id from genes_v1.tsv",
             "predicted_effect": f"finite float in canonical unit {effect_unit}",
             "probabilities": {

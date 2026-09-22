@@ -10,6 +10,7 @@ DEFAULT_ALIASES = {
     "cell_type": "cell_type",
     "perturbation_status": "perturbation",
     "perturbation": "perturbation",
+    "perturbation_id": "perturbation",
     "stim": "perturbation",
     "condition": "perturbation",
     "treatment_time": "time",
@@ -21,6 +22,13 @@ DEFAULT_ALIASES = {
     "sample": "sample_id",
     "sample_id": "sample_id",
     "species": "species",
+    "context_id": "context_id",
+    "replicate_id": "replicate_id",
+    "batch_id": "batch_id",
+    "is_control": "is_control",
+    "control": "is_control",
+    "dose_unit": "dose_unit",
+    "time_unit": "time_unit",
 }
 
 

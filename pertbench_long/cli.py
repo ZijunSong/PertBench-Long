@@ -96,8 +96,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     build = sub.add_parser("build-episodes", help="Build public/private episode packs (trusted builder only)")
     build.add_argument("--config", default=None)
-    build.add_argument("--fixture", choices=["synthetic", "pbmc"], default=None)
+    build.add_argument("--fixture", choices=["synthetic", "pbmc", "synthetic_dose", "synthetic_pair", "synthetic_context"], default=None)
     build.add_argument("--output", default=None)
+
+    audit = sub.add_parser("audit-conditions", help="Audit eligible O/Q/T scale for a source adapter")
+    audit.add_argument("--config", required=True)
+    audit.add_argument("--output", default=None)
 
     validate = sub.add_parser("validate", help="Validate a private manifest without creating directories")
     validate.add_argument("--manifest", required=True)
@@ -157,10 +161,13 @@ def _cmd_list() -> int:
     from pertbench_long.baselines.engine import BASELINE_REGISTRY
     from pertbench_long.runtime.runner import AGENT_REGISTRY
     from pertbench_long.schemas.types import IMPLEMENTED_PROTOCOLS, UNSUPPORTED_PROTOCOLS
+    from pertbench_long.tasks.registry import list_tasks
 
     print("protocols (implemented):")
     for item in sorted(IMPLEMENTED_PROTOCOLS):
-        print(f"  - {item}")
+        spec = list_tasks().get(item)
+        extra = f" family={spec.task_family} labels={spec.label_profile}" if spec else ""
+        print(f"  - {item}{extra}")
     print("protocols (named, unsupported):")
     for item in sorted(UNSUPPORTED_PROTOCOLS):
         print(f"  - {item} [unavailable]")
@@ -246,6 +253,37 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_audit_conditions(args: argparse.Namespace) -> int:
+    from pertbench_long.data.audit_conditions import audit_conditions
+
+    cfg = _load_yaml(Path(args.config))
+    adapter = str(cfg.get("adapter") or "")
+    data_dir = resolve_user_path(cfg.get("data_dir"), config_path=Path(args.config))
+    if adapter == "sciplex":
+        from pertbench_long.data.adapters.sciplex import import_sciplex
+
+        store = import_sciplex(data_dir, manifest_path=cfg.get("manifest"), declared_matrix_kind=cfg.get("matrix_kind", "counts"))
+    elif adapter == "norman":
+        from pertbench_long.data.adapters.norman import import_norman
+
+        store = import_norman(data_dir, manifest_path=cfg.get("manifest"), declared_matrix_kind=cfg.get("matrix_kind", "counts"))
+    else:
+        raise ConfigError("audit-conditions requires adapter=sciplex or adapter=norman and an explicit data_dir")
+    report = audit_conditions(
+        store,
+        min_cells=int(cfg.get("min_cells", 5)),
+        min_candidates=int(cfg.get("min_candidates", 24)),
+        min_targets=int(cfg.get("min_targets", 8)),
+        protocol=cfg.get("protocol"),
+    )
+    report.pop("conditions", None)
+    out = Path(args.output or "docs/pertbench_long/condition_audit.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print(f"wrote {out} status={report['status']} eligible={report['n_eligible']}")
+    return EXIT_OK if report["status"] == "ok" else EXIT_CONFIG
+
+
 def _cmd_build(args: argparse.Namespace) -> int:
     from pertbench_long.episodes.builder import build_episode_from_store, build_synthetic_episode
 
@@ -259,8 +297,26 @@ def _cmd_build(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, indent=2, default=str))
         return EXIT_OK
+    if fixture == "synthetic_dose":
+        from pertbench_long.episodes.synthetic_long import build_synthetic_dose_episode
+
+        result = build_synthetic_dose_episode(dest / "sciplex_dose_synth_0001")
+        print(json.dumps(result, indent=2, default=str))
+        return EXIT_OK
+    if fixture == "synthetic_pair":
+        from pertbench_long.episodes.synthetic_long import build_synthetic_pair_episode
+
+        result = build_synthetic_pair_episode(dest / "norman_pair_synth_0001")
+        print(json.dumps(result, indent=2, default=str))
+        return EXIT_OK
+    if fixture == "synthetic_context":
+        from pertbench_long.episodes.synthetic_long import build_synthetic_context_episode
+
+        result = build_synthetic_context_episode(dest / "sciplex_context_synth_0001")
+        print(json.dumps(result, indent=2, default=str))
+        return EXIT_OK
     if fixture != "pbmc":
-        raise ConfigError("fixture must be synthetic or pbmc; they are not interchangeable")
+        raise ConfigError("fixture must be synthetic, pbmc, synthetic_dose, synthetic_pair, or synthetic_context")
     from pertbench_long.data.adapter import import_tables
 
     if not cfg.get("pbmc_csv_dir"):
@@ -412,7 +468,8 @@ def _cmd_score(args: argparse.Namespace) -> int:
     if run_path.name.endswith("*") or "*" in str(run_path):
         raise ConfigError("--run must be a single run directory, not a glob")
     payload = score_run(run_path, Path(args.private_manifest))
-    print(json.dumps({k: payload[k] for k in ("outcome", "score_status", "direction_score", "AUBC", "S0", "S1", "S2", "delta_S", "synthetic") if k in payload}, indent=2))
+    keys = ("outcome", "score_status", "direction_score", "AUBC", "S0", "S1", "S2", "scores_by_budget", "scores_curve", "delta_S", "synthetic")
+    print(json.dumps({k: payload[k] for k in keys if k in payload}, indent=2))
     if payload.get("outcome") == "integrity_failure":
         return EXIT_INTEGRITY
     return EXIT_OK if payload.get("score_status") == "scored" else EXIT_INFRA
@@ -628,6 +685,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "list": lambda: _cmd_list(),
         "inspect-data": lambda: _cmd_inspect(args),
         "build-episodes": lambda: _cmd_build(args),
+        "audit-conditions": lambda: _cmd_audit_conditions(args),
         "validate": lambda: _cmd_validate(args),
         "smoke": lambda: _cmd_smoke(args),
         "run": lambda: _cmd_run(args),

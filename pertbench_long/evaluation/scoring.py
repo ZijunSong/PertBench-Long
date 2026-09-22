@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -61,6 +61,70 @@ def class_recall(pred: Sequence[str], truth: Sequence[str]) -> dict[str, float]:
         else:
             out[cls] = sum(p == cls and t == cls for p, t in zip(pred, truth)) / denom
     return out
+
+
+def score_continuous_predictions(
+    predictions: pd.DataFrame,
+    labels: pd.DataFrame,
+    *,
+    target_ids: Sequence[str],
+    gene_ids: Sequence[str],
+    a_family: float = 0.5,
+    group_by_context: Mapping[str, str] | None = None,
+    require_direction: bool = False,
+) -> dict[str, Any]:
+    if a_family <= 0:
+        raise ValueError("a_family must be a frozen positive constant")
+    pred = validate_predictions(predictions, target_ids=target_ids, gene_ids=gene_ids, require_direction=require_direction)
+    lab = labels.copy()
+    lab_key = lab["target_id"].astype(str) + "\t" + lab["gene_id"].astype(str)
+    if lab_key.duplicated().any():
+        raise ValueError("duplicate target×gene labels; conflict is not dropped")
+    pred_key = pred["target_id"].astype(str) + "\t" + pred["gene_id"].astype(str)
+    lab = lab.assign(_k=lab_key)
+    merged = pred.assign(_k=pred_key).merge(lab[["_k", "reference_effect"]], on="_k", how="left")
+    if merged["reference_effect"].isna().any():
+        raise ValueError("labels missing for required prediction rows")
+    per_target = []
+    for target in target_ids:
+        part = merged[merged["target_id"] == target]
+        err = np.abs(part["predicted_effect"].to_numpy(dtype=np.float64) - part["reference_effect"].to_numpy(dtype=np.float64))
+        mae = float(np.mean(err))
+        score = float(np.exp(-mae / a_family))
+        pearson, pearson_reason = pearson_or_na(
+            part["predicted_effect"].to_numpy(dtype=np.float64),
+            part["reference_effect"].to_numpy(dtype=np.float64),
+        )
+        per_target.append(
+            {
+                "target_id": target,
+                "n": int(len(part)),
+                "effect_mae": mae,
+                "continuous_score": score,
+                "pearson_delta": pearson,
+                "pearson_delta_na_reason": pearson_reason,
+                "context_id": None if not group_by_context else group_by_context.get(target),
+            }
+        )
+    if group_by_context:
+        contexts = sorted({row["context_id"] for row in per_target if row["context_id"]})
+        context_scores = []
+        for ctx in contexts:
+            vals = [row["continuous_score"] for row in per_target if row["context_id"] == ctx]
+            context_scores.append(float(np.mean(vals)) if vals else float("nan"))
+        episode_score = float(np.mean(context_scores)) if context_scores else 0.0
+    else:
+        episode_score = float(np.mean([row["continuous_score"] for row in per_target])) if per_target else 0.0
+    return {
+        "direction_score": episode_score,
+        "continuous_score": episode_score,
+        "effect_mae": float(np.mean([row["effect_mae"] for row in per_target])) if per_target else None,
+        "per_target": per_target,
+        "n_targets": len(per_target),
+        "n_genes": len(gene_ids),
+        "a_family": a_family,
+        "scoring_profile": "continuous_effect_aubc_v1",
+    }
 
 
 def score_predictions(

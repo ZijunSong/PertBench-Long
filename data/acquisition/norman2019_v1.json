@@ -1,0 +1,27 @@
+{
+  "dataset_id": "norman2019",
+  "accession": "GSE133344",
+  "release_id": "norman2019_v1",
+  "license": "user_must_confirm_source_license",
+  "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "required_files": ["matrix.h5ad"],
+  "field_map": {
+    "cell_type": "cell_type",
+    "context_id": "cell_type",
+    "perturbation": "perturbation",
+    "sample_id": "sample_id",
+    "replicate_id": "replicate_id",
+    "batch_id": "batch_id",
+    "control_flag": "is_control"
+  },
+  "software": {
+    "adapter": "pertbench_long.data.adapters.norman.import_norman",
+    "identity_version": "cid_v1",
+    "intervention": "CRISPRa"
+  },
+  "notes": [
+    "A+B and B+A are the same unordered pair condition.",
+    "Only observed single and pair perturbations are used; missing pairs are not imputed.",
+    "Input is an explicit data directory; /data/ppnm is never implied."
+  ]
+}

@@ -101,10 +101,23 @@ Per-item audit mapping: `docs/pertbench_long/review_fix_status.md`.
 
 ## R24 · P2 · MOA / temporal — blocked/unsupported
 
+## Long-horizon expansion (2026-09-22) — partial (Phase A + synthetic T1/T2/T3 loop)
+
+- C01 task registry: `chemical_dose_acquisition_v1`, `genetic_pair_acquisition_v1`, `context_campaign_acquisition_v1` are implemented; MOA/temporal stay blocked
+- C02 `cid_v1` condition identity: 1 uM == 1000 nM; A+B == B+A; unknown units refused for exact-dose protocols
+- C03 adapters `data/adapters/sciplex.py` and `norman.py` require an explicit data directory
+- C04 sparse row extract / library size without unconditional full `.toarray()`
+- C05 `audit-conditions` and `data/audit_conditions.py` emit `insufficient_eligible_conditions`
+- C06 generic builder from condition IDs; PBMC wrapper unchanged
+- C07 dose interpolation/extrapolation, pair-holdout, context few-shot, and release cross-contamination checks
+- C08 `lognorm_cellmean_delta_v1` is independent of PBMC `effect_proxy_v1`
+- C09–C13 helpers/baselines/scoring dispatch by protocol; full `scores_curve` S0…SB
+- Real sci-Plex3 / Norman downloads and live local/API model runs: **not_run**
+
 ## Tests
 
-`python -m pytest tests/pertbench_long -q` after this revision: **46 passed, 1 skipped** in the author conda env (`pertdiffbench`).  
-Skipped: live model V32. Legacy `pertdiffbench` CLI ran when present.
+`python -m pytest tests/pertbench_long -q` after the 2026-09-22 long-horizon expansion: **76 passed, 5 skipped**.  
+Skipped items are live model / Docker isolation paths (`not_run`).
 
 ## Not executed / not claimed
 

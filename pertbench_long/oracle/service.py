@@ -50,6 +50,11 @@ class Oracle:
                 "cell_type": c.cell_type,
                 "perturbation": c.perturbation,
                 "cost": c.cost,
+                "dose": c.dose,
+                "dose_unit": c.dose_unit,
+                "context_id": c.context_id or c.cell_type,
+                "condition_id": c.condition_id,
+                "perturbation_kind": c.perturbation_kind,
             }
             for c in self.spec.public.candidate_experiments
         ]

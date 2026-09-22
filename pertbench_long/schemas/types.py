@@ -6,13 +6,19 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal, Optional
 
 SCHEMA_VERSION = "1.0"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION})
+SCHEMA_VERSION_V2 = "2.0"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, SCHEMA_VERSION_V2})
 
 PROTOCOL_WITHIN_STUDY_CELLTYPE_OOD = "within_study_celltype_ood_v1"
 PROTOCOL_DONOR_HELDOUT = "donor_heldout_v1"
 PROTOCOL_STUDY_HELDOUT = "study_heldout_v1"
 PROTOCOL_MOA_HELDOUT = "moa_heldout_v1"
 PROTOCOL_TEMPORAL_INTERP = "temporal_interpolation_v1"
+PROTOCOL_CHEMICAL_DOSE = "chemical_dose_acquisition_v1"
+PROTOCOL_GENETIC_PAIR = "genetic_pair_acquisition_v1"
+PROTOCOL_CONTEXT_CAMPAIGN = "context_campaign_acquisition_v1"
+PROTOCOL_PROGRAM_RANK = "program_rank_acquisition_v1"
+PROTOCOL_TEMPORAL_FORECAST = "temporal_forecasting_v1"
 
 ALLOWED_PROTOCOLS = frozenset(
     {
@@ -21,15 +27,42 @@ ALLOWED_PROTOCOLS = frozenset(
         PROTOCOL_STUDY_HELDOUT,
         PROTOCOL_MOA_HELDOUT,
         PROTOCOL_TEMPORAL_INTERP,
+        PROTOCOL_CHEMICAL_DOSE,
+        PROTOCOL_GENETIC_PAIR,
+        PROTOCOL_CONTEXT_CAMPAIGN,
+        PROTOCOL_PROGRAM_RANK,
+        PROTOCOL_TEMPORAL_FORECAST,
     }
 )
-# Only the first protocol has implemented split/group checks. Others are named but unsupported.
-IMPLEMENTED_PROTOCOLS = frozenset({PROTOCOL_WITHIN_STUDY_CELLTYPE_OOD})
+# A protocol is implemented only when registry builder/split/label/scorer/baseline all exist.
+IMPLEMENTED_PROTOCOLS = frozenset(
+    {
+        PROTOCOL_WITHIN_STUDY_CELLTYPE_OOD,
+        PROTOCOL_CHEMICAL_DOSE,
+        PROTOCOL_GENETIC_PAIR,
+        PROTOCOL_CONTEXT_CAMPAIGN,
+    }
+)
 UNSUPPORTED_PROTOCOLS = ALLOWED_PROTOCOLS - IMPLEMENTED_PROTOCOLS
 
 LABEL_EFFECT_PROXY_V1 = "effect_proxy_v1"
 LABEL_REPLICATE_DE_V1 = "replicate_de_v1"
-ALLOWED_LABEL_PROFILES = frozenset({LABEL_EFFECT_PROXY_V1, LABEL_REPLICATE_DE_V1})
+LABEL_LOGNORM_CELLMEAN_DELTA_V1 = "lognorm_cellmean_delta_v1"
+ALLOWED_LABEL_PROFILES = frozenset({LABEL_EFFECT_PROXY_V1, LABEL_REPLICATE_DE_V1, LABEL_LOGNORM_CELLMEAN_DELTA_V1})
+
+SCORING_DIRECTION_V1 = "direction_score_v1"
+SCORING_CONTINUOUS_AUBC_V1 = "continuous_effect_aubc_v1"
+ALLOWED_SCORING_PROFILES = frozenset({SCORING_DIRECTION_V1, SCORING_CONTINUOUS_AUBC_V1})
+
+TASK_FAMILY_CELLTYPE_OOD = "celltype_ood"
+TASK_FAMILY_CHEMICAL_DOSE = "chemical_dose"
+TASK_FAMILY_GENETIC_PAIR = "genetic_pair"
+TASK_FAMILY_CONTEXT_CAMPAIGN = "context_campaign"
+
+ALLOWED_SCORING_TRACKS = frozenset({"official", "diagnostic", "pilot"})
+ALLOWED_READINESS = frozenset({"official", "diagnostic", "pilot"})
+COST_POLICY_UNIT_V1 = "unit_cost_v1"
+NAMED_RESOURCE_PROFILES = frozenset({"cpu_pilot_v1", "long_cpu_v1"})
 
 ALLOWED_COST_UNITS = frozenset({"credit"})
 ALLOWED_MATRIX_KINDS = frozenset({"counts", "normalized", "log1p", "scaled", "unknown"})
@@ -84,6 +117,23 @@ class ResourceProfile:
     max_output_bytes: int = 50 * 1024 * 1024
 
 
+def named_resource_profile(name: str) -> ResourceProfile:
+    if name == "cpu_pilot_v1":
+        return ResourceProfile()
+    if name == "long_cpu_v1":
+        return ResourceProfile(
+            name="long_cpu_v1",
+            cpu=4,
+            memory_gib=16,
+            workspace_gib=2,
+            tool_timeout_s=120,
+            episode_timeout_s=1800,
+            max_external_tool_calls=240,
+            max_generation_tokens=64000,
+        )
+    raise ValueError(f"unknown named profile {name!r}")
+
+
 @dataclass(frozen=True)
 class ArtifactRef:
     artifact_id: str
@@ -104,6 +154,12 @@ class CandidateExperiment:
     time: Optional[float] = None
     time_unit: str = "none"
     description: str = ""
+    context_id: str = ""
+    context_type: str = "unknown"
+    condition_id: str = ""
+    perturbation_kind: str = "unknown"
+    perturbation_components: tuple[str, ...] = ()
+    control_group_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -115,6 +171,12 @@ class TargetDescription:
     dose_unit: str = "none"
     time: Optional[float] = None
     time_unit: str = "none"
+    context_id: str = ""
+    context_type: str = "unknown"
+    condition_id: str = ""
+    perturbation_kind: str = "unknown"
+    perturbation_components: tuple[str, ...] = ()
+    control_group_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -137,10 +199,21 @@ class ExperimentRecord:
     condition_id: str = ""
     source_file: str = ""
     matrix_kind: str = "unknown"
+    context_id: str = ""
+    context_type: str = "unknown"
+    perturbation_kind: str = "unknown"
+    perturbation_components: tuple[str, ...] = ()
+    replicate_id: Optional[str] = None
+    batch_id: Optional[str] = None
+    donor_id: Optional[str] = None
+    control_group_id: Optional[str] = None
+    identity_version: str = ""
+    missing_identity_reason: Optional[str] = None
 
     def condition_key(self) -> str:
         if self.condition_id:
             return self.condition_id
+        # Legacy PBMC identity. New tasks must set condition_id via cid_v1.
         dose = "NA" if self.dose is None else f"{self.dose}{self.dose_unit}"
         time = "NA" if self.time is None else f"{self.time}{self.time_unit}"
         return "|".join(
@@ -154,6 +227,16 @@ class ExperimentRecord:
                 self.assay,
             ]
         )
+
+    def resolved_context_id(self) -> str:
+        return self.context_id or self.cell_type
+
+    def resolved_components(self) -> tuple[str, ...]:
+        if self.perturbation_components:
+            return tuple(self.perturbation_components)
+        if self.perturbation_id:
+            return (self.perturbation_id,)
+        return ()
 
 
 @dataclass
@@ -183,6 +266,12 @@ class PublicEpisodeSpec:
     related_family: Optional[str] = None
     synthetic: bool = False
     notes: list[str] = field(default_factory=list)
+    task_family: str = ""
+    split_variant: str = ""
+    scoring_profile: str = SCORING_DIRECTION_V1
+    cost_policy: str = COST_POLICY_UNIT_V1
+    readiness: str = "diagnostic"
+    data_provenance: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = _as_plain(self)
@@ -213,6 +302,10 @@ class PrivateEpisodeSpec:
     matrix_kind: str
     donor_metadata_present: bool = False
     provenance: dict[str, Any] = field(default_factory=dict)
+    control_mapping: dict[str, str] = field(default_factory=dict)
+    readiness: str = "diagnostic"
+    label_validity: str = "unknown"
+    protocol_implementation: str = "implemented"
 
     def to_dict(self) -> dict[str, Any]:
         return _as_plain(self)

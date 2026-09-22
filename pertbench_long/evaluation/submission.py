@@ -11,6 +11,7 @@ import pandas as pd
 from pertbench_long.errors import SubmissionInvalid
 
 REQUIRED_COLUMNS = ("target_id", "gene_id", "predicted_effect", "p_down", "p_neutral", "p_up")
+CONTINUOUS_REQUIRED = ("target_id", "gene_id", "predicted_effect")
 PROB_COLS = ("p_down", "p_neutral", "p_up")
 PROB_TOL = 1e-6
 
@@ -25,8 +26,10 @@ def validate_predictions(
     *,
     target_ids: Sequence[str],
     gene_ids: Sequence[str],
+    require_direction: bool = True,
 ) -> pd.DataFrame:
-    missing = [c for c in REQUIRED_COLUMNS if c not in frame.columns]
+    required = REQUIRED_COLUMNS if require_direction else CONTINUOUS_REQUIRED
+    missing = [c for c in required if c not in frame.columns]
     if missing:
         raise SubmissionInvalid(f"missing columns: {missing}")
     if frame.empty:
@@ -42,18 +45,37 @@ def validate_predictions(
         raise SubmissionInvalid(f"missing {len(missing_pairs)} required target×gene rows")
     if extra_pairs:
         raise SubmissionInvalid(f"{len(extra_pairs)} unknown target×gene rows")
-    numeric = frame.loc[:, ["predicted_effect", *PROB_COLS]]
-    if numeric.isna().any().any():
-        raise SubmissionInvalid("NaN in predicted_effect or probabilities")
-    arr = numeric.to_numpy(dtype=np.float64)
-    if not np.all(np.isfinite(arr)):
-        raise SubmissionInvalid("non-finite values in predicted_effect or probabilities")
-    probs = frame.loc[:, PROB_COLS].to_numpy(dtype=np.float64)
-    if np.any(probs < 0) or np.any(probs > 1):
-        raise SubmissionInvalid("probabilities must be in [0, 1]")
-    sums = probs.sum(axis=1)
-    if np.any(np.abs(sums - 1.0) > PROB_TOL):
-        raise SubmissionInvalid("probability rows must sum to 1 ± 1e-6; no silent renormalization")
+    if require_direction:
+        numeric = frame.loc[:, ["predicted_effect", *PROB_COLS]]
+        if numeric.isna().any().any():
+            raise SubmissionInvalid("NaN in predicted_effect or probabilities")
+        arr = numeric.to_numpy(dtype=np.float64)
+        if not np.all(np.isfinite(arr)):
+            raise SubmissionInvalid("non-finite values in predicted_effect or probabilities")
+        probs = frame.loc[:, PROB_COLS].to_numpy(dtype=np.float64)
+        if np.any(probs < 0) or np.any(probs > 1):
+            raise SubmissionInvalid("probabilities must be in [0, 1]")
+        sums = probs.sum(axis=1)
+        if np.any(np.abs(sums - 1.0) > PROB_TOL):
+            raise SubmissionInvalid("probability rows must sum to 1 ± 1e-6; no silent renormalization")
+    else:
+        numeric = frame.loc[:, ["predicted_effect"]]
+        if numeric.isna().any().any():
+            raise SubmissionInvalid("NaN in predicted_effect")
+        arr = numeric.to_numpy(dtype=np.float64)
+        if not np.all(np.isfinite(arr)):
+            raise SubmissionInvalid("non-finite values in predicted_effect")
+        extra_probs = [c for c in PROB_COLS if c in frame.columns]
+        if extra_probs:
+            probs = frame.loc[:, extra_probs].to_numpy(dtype=np.float64)
+            if np.any(~np.isfinite(probs)):
+                raise SubmissionInvalid("non-finite optional probabilities")
+            if set(PROB_COLS) <= set(frame.columns):
+                if np.any(probs < 0) or np.any(probs > 1):
+                    raise SubmissionInvalid("probabilities must be in [0, 1]")
+                sums = frame.loc[:, PROB_COLS].to_numpy(dtype=np.float64).sum(axis=1)
+                if np.any(np.abs(sums - 1.0) > PROB_TOL):
+                    raise SubmissionInvalid("probability rows must sum to 1 ± 1e-6; no silent renormalization")
     ordered = (
         frame.assign(_t=pd.Categorical(frame["target_id"], list(target_ids)), _g=pd.Categorical(frame["gene_id"], list(gene_ids)))
         .sort_values(["_t", "_g"])

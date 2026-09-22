@@ -7,6 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
+from pertbench_long.data.sparse_ops import extract_dense_block, is_sparse, library_sizes as sparse_library_sizes
 from pertbench_long.errors import UnsupportedProfile
 from pertbench_long.hashes import gene_order_hash, sha256_bytes
 
@@ -37,33 +38,39 @@ def profile_for_kind(matrix_kind: str) -> TransformProfile:
     raise UnsupportedProfile(f"unsupported matrix_kind={matrix_kind}")
 
 
-def library_sizes(matrix: np.ndarray) -> np.ndarray:
-    return np.asarray(matrix, dtype=np.float64).sum(axis=1)
+def library_sizes(matrix) -> np.ndarray:
+    return sparse_library_sizes(matrix)
 
 
-def normalize_counts_then_log1p(matrix: np.ndarray, *, full_universe: np.ndarray) -> np.ndarray:
+def normalize_counts_then_log1p(matrix, *, full_universe) -> np.ndarray:
     """Normalize using the full assay gene universe, then log1p. Output G is a column subset later."""
-    data = np.asarray(matrix, dtype=np.float64)
-    universe = np.asarray(full_universe, dtype=np.float64)
-    if not np.all(np.isfinite(data)) or not np.all(np.isfinite(universe)):
-        raise UnsupportedProfile("counts matrix contains NaN/Inf")
-    if np.any(data < 0) or np.any(universe < 0):
-        raise UnsupportedProfile("counts matrix contains negative values")
-    totals = universe.sum(axis=1, keepdims=True)
+    data = matrix if is_sparse(matrix) else np.asarray(matrix, dtype=np.float64)
+    universe = full_universe if full_universe is not None else data
+    totals = library_sizes(universe).reshape(-1, 1)
     if np.any(totals <= 0):
         raise UnsupportedProfile("zero library size is rejected; it is not silently replaced")
-    normed = data * (COUNTS_NORM_TARGET / totals)
-    return np.log1p(normed)
+    if is_sparse(data) or is_sparse(universe):
+        dense = extract_dense_block(data, range(int(data.shape[0])))
+        if not np.all(np.isfinite(dense)) or np.any(dense < 0):
+            raise UnsupportedProfile("counts matrix contains NaN/Inf or negative values")
+        return np.log1p(dense * (COUNTS_NORM_TARGET / totals))
+    data_d = np.asarray(data, dtype=np.float64)
+    universe_d = np.asarray(universe, dtype=np.float64)
+    if not np.all(np.isfinite(data_d)) or not np.all(np.isfinite(universe_d)):
+        raise UnsupportedProfile("counts matrix contains NaN/Inf")
+    if np.any(data_d < 0) or np.any(universe_d < 0):
+        raise UnsupportedProfile("counts matrix contains negative values")
+    return np.log1p(data_d * (COUNTS_NORM_TARGET / totals))
 
 
-def to_effect_space(matrix: np.ndarray, matrix_kind: str, *, full_universe: np.ndarray | None = None) -> np.ndarray:
+def to_effect_space(matrix, matrix_kind: str, *, full_universe=None):
     profile = profile_for_kind(matrix_kind)
-    data = np.asarray(matrix, dtype=np.float64)
+    if matrix_kind == "counts":
+        universe = full_universe if full_universe is not None else matrix
+        return normalize_counts_then_log1p(matrix, full_universe=universe)
+    data = extract_dense_block(matrix, range(int(matrix.shape[0]))) if is_sparse(matrix) else np.asarray(matrix, dtype=np.float64)
     if not np.all(np.isfinite(data)):
         raise UnsupportedProfile("matrix contains NaN/Inf")
-    if matrix_kind == "counts":
-        universe = full_universe if full_universe is not None else data
-        return normalize_counts_then_log1p(data, full_universe=universe)
     if matrix_kind == "log1p":
         return data
     if matrix_kind == "normalized":
@@ -92,7 +99,7 @@ def select_panel_from_visible(
     """Episode-specific panel from O+C only. Must not use Q/T rows."""
     if not visible_rows:
         return list(gene_ids)[:n_genes]
-    subset = np.asarray(matrix, dtype=np.float64)[list(visible_rows)]
+    subset = extract_dense_block(matrix, list(visible_rows))
     var = subset.var(axis=0)
     order = np.argsort(-var)
     n = min(int(n_genes), len(gene_ids))

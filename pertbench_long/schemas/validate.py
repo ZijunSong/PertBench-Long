@@ -13,11 +13,16 @@ from pertbench_long.schemas.types import (
     ALLOWED_LABEL_PROFILES,
     ALLOWED_MATRIX_KINDS,
     ALLOWED_PROTOCOLS,
+    ALLOWED_READINESS,
+    ALLOWED_SCORING_PROFILES,
+    ALLOWED_SCORING_TRACKS,
     ALLOWED_SPECIES,
     ALLOWED_TIME_UNITS,
+    COST_POLICY_UNIT_V1,
     IMPLEMENTED_PROTOCOLS,
+    NAMED_RESOURCE_PROFILES,
     PRIVATE_PUBLIC_FORBIDDEN_KEYS,
-    SCHEMA_VERSION,
+    SCORING_DIRECTION_V1,
     SUPPORTED_SCHEMA_VERSIONS,
     CandidateExperiment,
     ExperimentRecord,
@@ -26,6 +31,7 @@ from pertbench_long.schemas.types import (
     ResourceProfile,
     TargetDescription,
     dataclass_field_names,
+    named_resource_profile,
 )
 
 
@@ -107,9 +113,9 @@ def validate_schema_version(version: str, field: str = "schema_version") -> None
 
 def parse_resource_profile(payload: Any) -> ResourceProfile:
     if isinstance(payload, str):
-        if payload != "cpu_pilot_v1":
+        if payload not in NAMED_RESOURCE_PROFILES:
             raise FieldError("resource_profile", f"unknown named profile {payload!r}")
-        return ResourceProfile()
+        return named_resource_profile(payload)
     data = _require_mapping(payload, "resource_profile")
     _reject_unknown(data, dataclass_field_names(ResourceProfile), "resource_profile")
     return ResourceProfile(**{k: data[k] for k in dataclass_field_names(ResourceProfile) if k in data})
@@ -137,6 +143,15 @@ def parse_candidate(payload: Any, index: int) -> CandidateExperiment:
     for key in ("dose", "time"):
         if key in data:
             _reject_nan(data[key], f"candidate_experiments[{index}].{key}")
+    components = data.get("perturbation_components") or ()
+    if isinstance(components, list):
+        components = tuple(str(x) for x in components)
+    elif isinstance(components, tuple):
+        components = tuple(str(x) for x in components)
+    elif components:
+        components = (str(components),)
+    else:
+        components = ()
     return CandidateExperiment(
         experiment_id=_require_str(data, "experiment_id"),
         cell_type=_require_str(data, "cell_type"),
@@ -147,6 +162,12 @@ def parse_candidate(payload: Any, index: int) -> CandidateExperiment:
         time=data.get("time"),
         time_unit=time_unit,
         description=str(data.get("description", "")),
+        context_id=str(data.get("context_id") or data.get("cell_type") or ""),
+        context_type=str(data.get("context_type") or "unknown"),
+        condition_id=str(data.get("condition_id") or ""),
+        perturbation_kind=str(data.get("perturbation_kind") or "unknown"),
+        perturbation_components=components,
+        control_group_id=data.get("control_group_id"),
     )
 
 
@@ -159,6 +180,15 @@ def parse_target(payload: Any, index: int) -> TargetDescription:
         raise FieldError(f"targets[{index}].dose_unit", f"illegal unit {dose_unit!r}")
     if time_unit not in ALLOWED_TIME_UNITS:
         raise FieldError(f"targets[{index}].time_unit", f"illegal unit {time_unit!r}")
+    components = data.get("perturbation_components") or ()
+    if isinstance(components, list):
+        components = tuple(str(x) for x in components)
+    elif isinstance(components, tuple):
+        components = tuple(str(x) for x in components)
+    elif components:
+        components = (str(components),)
+    else:
+        components = ()
     return TargetDescription(
         target_id=_require_str(data, "target_id"),
         cell_type=_require_str(data, "cell_type"),
@@ -167,6 +197,12 @@ def parse_target(payload: Any, index: int) -> TargetDescription:
         dose_unit=dose_unit,
         time=data.get("time"),
         time_unit=time_unit,
+        context_id=str(data.get("context_id") or data.get("cell_type") or ""),
+        context_type=str(data.get("context_type") or "unknown"),
+        condition_id=str(data.get("condition_id") or ""),
+        perturbation_kind=str(data.get("perturbation_kind") or "unknown"),
+        perturbation_components=components,
+        control_group_id=data.get("control_group_id"),
     )
 
 
@@ -188,6 +224,12 @@ def validate_public_payload(payload: Mapping[str, Any]) -> PublicEpisodeSpec:
     label_profile = _require_str(data, "label_profile")
     if label_profile not in ALLOWED_LABEL_PROFILES:
         raise FieldError("label_profile", f"unknown label_profile {label_profile!r}")
+    scoring_profile = str(data.get("scoring_profile") or SCORING_DIRECTION_V1)
+    if scoring_profile not in ALLOWED_SCORING_PROFILES:
+        raise FieldError("scoring_profile", f"unknown scoring_profile {scoring_profile!r}")
+    readiness = str(data.get("readiness") or ("pilot" if data.get("synthetic") else "diagnostic"))
+    if readiness not in ALLOWED_READINESS:
+        raise FieldError("readiness", f"unknown readiness {readiness!r}")
     cost_unit = _require_str(data, "cost_unit")
     if cost_unit not in ALLOWED_COST_UNITS:
         raise FieldError("cost_unit", "v1 cost_unit must be 'credit'")
@@ -232,6 +274,12 @@ def validate_public_payload(payload: Mapping[str, Any]) -> PublicEpisodeSpec:
         related_family=data.get("related_family"),
         synthetic=bool(data.get("synthetic", False)),
         notes=list(data.get("notes") or []),
+        task_family=str(data.get("task_family") or ""),
+        split_variant=str(data.get("split_variant") or ""),
+        scoring_profile=str(data.get("scoring_profile") or SCORING_DIRECTION_V1),
+        cost_policy=str(data.get("cost_policy") or COST_POLICY_UNIT_V1),
+        readiness=str(data.get("readiness") or ("pilot" if data.get("synthetic") else "diagnostic")),
+        data_provenance=dict(data.get("data_provenance") or {}),
     )
     scan_public_leak(public.to_dict())
     return public
@@ -274,6 +322,15 @@ def validate_experiment_record(payload: Mapping[str, Any], where: str = "record"
     donor = data.get("donor")
     if donor is not None and not isinstance(donor, str):
         raise FieldError(f"{where}.donor", "donor must be string or null")
+    components = data.get("perturbation_components") or ()
+    if isinstance(components, list):
+        components = tuple(str(x) for x in components)
+    elif isinstance(components, tuple):
+        components = tuple(str(x) for x in components)
+    elif components:
+        components = (str(components),)
+    else:
+        components = ()
     rec = ExperimentRecord(
         observation_id=_require_str(data, "observation_id"),
         study=_require_str(data, "study"),
@@ -293,6 +350,16 @@ def validate_experiment_record(payload: Mapping[str, Any], where: str = "record"
         condition_id=str(data.get("condition_id", "")),
         source_file=str(data.get("source_file", "")),
         matrix_kind=matrix_kind,
+        context_id=str(data.get("context_id") or data.get("cell_type") or ""),
+        context_type=str(data.get("context_type") or "unknown"),
+        perturbation_kind=str(data.get("perturbation_kind") or "unknown"),
+        perturbation_components=components,
+        replicate_id=data.get("replicate_id"),
+        batch_id=data.get("batch_id"),
+        donor_id=data.get("donor_id") or donor,
+        control_group_id=data.get("control_group_id"),
+        identity_version=str(data.get("identity_version") or ""),
+        missing_identity_reason=data.get("missing_identity_reason"),
     )
     return rec
 
@@ -341,8 +408,8 @@ def validate_private_payload(payload: Mapping[str, Any]) -> PrivateEpisodeSpec:
         raise FieldError("matrix_kind", f"illegal matrix_kind {matrix_kind!r}")
     scoring_config = dict(data.get("scoring_config") or {})
     scoring_track = str(scoring_config.get("scoring_track", "official"))
-    if scoring_track not in {"official", "diagnostic"}:
-        raise FieldError("scoring_config.scoring_track", "must be official or diagnostic")
+    if scoring_track not in ALLOWED_SCORING_TRACKS:
+        raise FieldError("scoring_config.scoring_track", "must be official, diagnostic, or pilot")
     if matrix_kind == "unknown" and scoring_track == "official":
         raise FieldError("matrix_kind", "unknown matrices cannot enter official scoring; use processing_unknown_diagnostic")
     if scoring_track == "official" and matrix_kind in {"scaled"}:
@@ -374,4 +441,8 @@ def validate_private_payload(payload: Mapping[str, Any]) -> PrivateEpisodeSpec:
         matrix_kind=matrix_kind,
         donor_metadata_present=bool(data.get("donor_metadata_present", False)),
         provenance=dict(data.get("provenance") or {}),
+        control_mapping={str(k): str(v) for k, v in dict(data.get("control_mapping") or {}).items()},
+        readiness=str(data.get("readiness") or public.readiness or "diagnostic"),
+        label_validity=str(data.get("label_validity") or "unknown"),
+        protocol_implementation=str(data.get("protocol_implementation") or "implemented"),
     )

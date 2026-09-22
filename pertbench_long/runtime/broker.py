@@ -446,7 +446,8 @@ class Broker:
         frame = pd.read_parquet(staged_pred)
         target_ids = [t.target_id for t in self.public_spec.targets]
         gene_ids = self._gene_ids()
-        validate_predictions(frame, target_ids=target_ids, gene_ids=gene_ids)
+        require_direction = self.public_spec.label_profile != "lognorm_cellmean_delta_v1"
+        validate_predictions(frame, target_ids=target_ids, gene_ids=gene_ids, require_direction=require_direction)
         pred_hash = sha256_file(staged_pred)
         claims_hash = None
         staged_claims = None

@@ -17,6 +17,18 @@ pertbench-long smoke --fixture synthetic --agent scripted_mock --mode local_trus
 
 `local_trusted_debug` 不是隔离合格结果。synthetic 分数不可当科学结论。
 
+## 长程新任务（工程闭环，合成 fixture）
+
+T1 药物剂量、T2 双基因组合、T3 跨背景预算已有独立协议与构建器。仓库不附带完整 sci-Plex/Norman 矩阵；没有用户提供的数据目录时，只能跑合成 fixture：
+
+```bash
+pertbench-long list
+pertbench-long build-episodes --fixture synthetic_dose --output /tmp/pb_long
+pertbench-long build-episodes --fixture synthetic_pair --output /tmp/pb_long
+```
+
+真实源数据构建需要显式 `--data-dir`（或 YAML `data_dir`），不会回退到 `/data/ppnm`。MOA / temporal 正式 profile 仍为 blocked。旧 PBMC `effect_proxy_v1` 分数定义未改。
+
 ## 模型测评（配置存在 ≠ live 完成）
 
 ```bash

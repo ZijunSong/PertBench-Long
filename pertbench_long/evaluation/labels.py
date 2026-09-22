@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from pertbench_long.errors import LabelBuildError
-from pertbench_long.schemas.types import LABEL_EFFECT_PROXY_V1, LABEL_REPLICATE_DE_V1
+from pertbench_long.schemas.types import LABEL_EFFECT_PROXY_V1, LABEL_LOGNORM_CELLMEAN_DELTA_V1, LABEL_REPLICATE_DE_V1
 
 TAU_DEFAULT = 0.10
 DIRECTIONS = ("down", "neutral", "up")
@@ -126,6 +126,73 @@ def build_effect_proxy_labels(
         profile=LABEL_EFFECT_PROXY_V1,
         effect_unit="log1p_mean_diff",
         tau=tau,
+        aggregation=aggregation,
+        notes=notes,
+    )
+
+
+def build_lognorm_cellmean_delta_labels(
+    *,
+    gene_ids: Sequence[str],
+    targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    donors: Mapping[str, tuple[Optional[Sequence[str]], Optional[Sequence[str]]]] | None = None,
+    interaction_partners: Mapping[str, tuple[np.ndarray | None, np.ndarray | None]] | None = None,
+) -> LabelTable:
+    """Continuous treated-minus-matched-control cell-mean delta on an already-transformed matrix.
+
+    The caller must place the store into log-normalized space using the full gene universe
+    *before* panel crop. This function does not apply a second log1p.
+    """
+    rows = []
+    notes = [
+        "label_name=lognorm_cellmean_delta",
+        "delta is mean(z_treated)-mean(z_matched_control) after lognorm_cellmean_delta_v1",
+        "this is not log2 fold-change and not a significance call",
+    ]
+    aggregation = "cell_weighted"
+    for target_id, (stim, control) in targets.items():
+        donor_pair = (donors or {}).get(target_id)
+        donor_stim = donor_pair[0] if donor_pair else None
+        donor_ctrl = donor_pair[1] if donor_pair else None
+        if donor_stim is None or not any(d not in {None, "None", ""} for d in (donor_stim or [])):
+            notes.append(f"{target_id}:sample_level_descriptive_effect_cells_are_not_biological_replicates")
+        delta, aggregation = mean_effect(stim, control, donor_stim=donor_stim, donor_control=donor_ctrl)
+        residual = None
+        residual_reason = None
+        partners = (interaction_partners or {}).get(target_id)
+        if partners is not None:
+            delta_a, delta_b = partners
+            if delta_a is None or delta_b is None:
+                residual_reason = "missing_single_gene_reference"
+            else:
+                residual = delta - np.asarray(delta_a, dtype=np.float64) - np.asarray(delta_b, dtype=np.float64)
+        for j, (gene, dlt) in enumerate(zip(gene_ids, delta)):
+            if not np.isfinite(dlt):
+                raise LabelBuildError("reference_effect is not finite")
+            item = {
+                "target_id": target_id,
+                "gene_id": gene,
+                "reference_effect": float(dlt),
+                "label_name": "lognorm_cellmean_delta",
+            }
+            if residual is None:
+                item["interaction_residual"] = np.nan
+                item["interaction_residual_reason"] = residual_reason or "not_requested"
+            else:
+                item["interaction_residual"] = float(residual[j]) if np.isfinite(residual[j]) else np.nan
+                item["interaction_residual_reason"] = None if np.isfinite(residual[j]) else "non_finite"
+            rows.append(item)
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise LabelBuildError("label table is empty")
+    key = frame["target_id"].astype(str) + "\t" + frame["gene_id"].astype(str)
+    if key.duplicated().any():
+        raise LabelBuildError("duplicate target_id × gene_id labels")
+    return LabelTable(
+        frame=frame,
+        profile=LABEL_LOGNORM_CELLMEAN_DELTA_V1,
+        effect_unit="lognorm_cellmean_delta",
+        tau=None,
         aggregation=aggregation,
         notes=notes,
     )

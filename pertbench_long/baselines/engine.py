@@ -9,7 +9,7 @@ import pandas as pd
 
 from pertbench_long.evaluation.scoring import make_prediction_frame
 from pertbench_long.runtime.broker import Broker
-from pertbench_long.tools.helpers import control_similarity, mean_delta_from_effects, visible_effect_table
+from pertbench_long.tools.helpers import control_similarity, evidence_paths_from_spec, mean_delta_from_effects, visible_effect_table
 
 
 def _gene_ids(broker: Broker) -> list[str]:
@@ -32,11 +32,11 @@ def _write_pred(broker: Broker, effects, probs) -> tuple[str, str]:
             {
                 "claim_id": "c1",
                 "scope": {"targets": _targets(broker)},
-                "statement": "Baseline effect transfer from visible stimulated conditions.",
+                "statement": "Baseline effect transfer from currently unlocked evidence only.",
                 "evidence_ids": list(broker.public_spec.initial_evidence) + list(broker.public_spec.reference_evidence),
                 "prediction_entries": [{"target_id": t, "gene_id": _gene_ids(broker)[0]} for t in _targets(broker)],
                 "limitations": ["Response prediction does not identify a unique mechanism."],
-                "alternative_explanations": ["Shared IFN program vs cell-type-specific regulation."],
+                "alternative_explanations": ["Shared program vs condition-specific regulation."],
             }
         ],
     }
@@ -46,15 +46,17 @@ def _write_pred(broker: Broker, effects, probs) -> tuple[str, str]:
 
 
 def _visible_paths(broker: Broker) -> tuple[list[Path], Path]:
-    initial = broker.public_root / "evidence" / "ev_initial_001.h5ad"
-    control = broker.public_root / "evidence" / "ev_controls_001.h5ad"
-    extra = sorted((broker.workspace / "evidence").glob("ev_q_*.h5ad"))
-    return [initial, *extra], control
+    return evidence_paths_from_spec(broker.public_root, broker.workspace, broker.public_spec)
+
+
+def _control_mapping(broker: Broker) -> dict[str, str] | None:
+    mapping = getattr(broker.oracle.spec, "control_mapping", None)
+    return dict(mapping) if mapping else None
 
 
 def estimate(broker: Broker, sigma: float = 0.15):
     evidence, control = _visible_paths(broker)
-    table = visible_effect_table(evidence, control, _gene_ids(broker))
+    table = visible_effect_table(evidence, control, _gene_ids(broker), control_mapping=_control_mapping(broker))
     return mean_delta_from_effects(table, _targets(broker), _gene_ids(broker), sigma=sigma)
 
 
@@ -119,7 +121,7 @@ def fixed_order_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
 
 
 def control_similarity_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
-    control = broker.public_root / "evidence" / "ev_controls_001.h5ad"
+    _, control = _visible_paths(broker)
     targets = [t.cell_type for t in broker.public_spec.targets]
     catalog = broker.list_experiments()
     order = control_similarity(control, targets, [c["cell_type"] for c in catalog])
@@ -137,6 +139,22 @@ BASELINE_REGISTRY = {
     "fixed_order_query": fixed_order_query,
     "control_similarity_query": control_similarity_query,
 }
+
+
+def pbmc_baselines() -> dict[str, Any]:
+    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "random_query", "fixed_order_query", "control_similarity_query")}
+
+
+def chemical_dose_baselines() -> dict[str, Any]:
+    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "random_query", "fixed_order_query")}
+
+
+def genetic_pair_baselines() -> dict[str, Any]:
+    return chemical_dose_baselines()
+
+
+def context_campaign_baselines() -> dict[str, Any]:
+    return chemical_dose_baselines()
 
 
 def run_baseline(name: str, broker: Broker, **kwargs: Any) -> None:

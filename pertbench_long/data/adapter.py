@@ -87,9 +87,26 @@ def infer_matrix_kind(matrix: np.ndarray) -> str:
 
 
 def _to_dense(x: Any) -> np.ndarray:
-    if hasattr(x, "toarray"):
-        return np.asarray(x.toarray(), dtype=np.float64)
+    """Compatibility helper for small tables. Large sparse matrices should use load_matrix_sparse."""
+    from pertbench_long.data.sparse_ops import extract_dense_block, is_sparse, n_cols, n_rows
+
+    if is_sparse(x) and int(n_rows(x) * n_cols(x)) > 2_000_000:
+        raise SchemaError("refusing unconditional densify of a large sparse matrix; use a source adapter")
+    if is_sparse(x):
+        return extract_dense_block(x, range(int(n_rows(x))))
     return np.asarray(x, dtype=np.float64)
+
+
+def load_matrix_sparse(path: Path):
+    """Load h5ad without forcing a full dense copy."""
+    suffix = path.suffix.lower()
+    if suffix != ".h5ad":
+        return load_table(path)
+    import anndata as ad
+
+    adata = ad.read_h5ad(path, backed=None)
+    matrix = adata.X
+    return matrix, [str(i) for i in adata.obs_names], [str(g) for g in adata.var_names], adata.obs.copy()
 
 
 def load_table(path: Path, gene_axis: str = "columns") -> tuple[np.ndarray, list[str], list[str]]:
@@ -158,8 +175,10 @@ class CanonicalStore:
     condition_to_rows: dict[str, list[int]] = field(default_factory=dict)
 
     def rows_for_condition(self, condition_id: str) -> np.ndarray:
+        from pertbench_long.data.sparse_ops import extract_dense_block
+
         idx = self.condition_to_rows.get(condition_id, [])
-        return self.matrix[idx]
+        return extract_dense_block(self.matrix, idx)
 
     def condition_ids(self) -> list[str]:
         return sorted(self.condition_to_rows)
