@@ -114,9 +114,28 @@ Per-item audit mapping: `docs/pertbench_long/review_fix_status.md`.
 - C09–C13 helpers/baselines/scoring dispatch by protocol; full `scores_curve` S0…SB
 - Real sci-Plex3 / Norman downloads and live local/API model runs: **not_run**
 
+## New-task readiness fixes (2026-09-22 review b286396) — partial
+
+| Item | Status | Evidence |
+|---|---|---|
+| R01 fetch + source lock | implemented / tested_synthetic | `fetch-data`; null URLs listed, no guessed GEO links |
+| R02 author-format prepare | implemented / tested_synthetic | `prepare-data` on fixture slices, not a GEO download |
+| R03 real build CLI | implemented / tested_synthetic | `--dataset/--adapter/--protocol` + YAML; no synthetic fallback |
+| R04 strict parse | implemented / tested_synthetic | no implicit counts/nM/h; `"false"` is false |
+| R05 control match | implemented / tested_synthetic | study/context/assay/time/vehicle; no `candidates[0]` |
+| R06 C/T isolation | implemented / tested_synthetic | build + `check_release` reject T-in-C |
+| R07 replicate estimand | implemented / tested_synthetic | 9:1 cells → 5 vs 1 by named estimand |
+| R08 sparse transform | implemented / tested_synthetic | no full densify sentinel |
+| R09 release partitions | implemented / tested_synthetic | missing partition / eval T in public dev rejected |
+| R10 seeded sampling | implemented / tested_synthetic | reorder + same seed keeps T; unknown kwargs rejected |
+| R11 official gate | implemented / tested_synthetic | `local_unreleased` stays pilot |
+| R12 public artifacts | implemented / tested_synthetic | task.md / mapping copied and hashed |
+| R13 task baselines | implemented / tested_synthetic | nearest dose / additivity / context transfer; live model **not_run** |
+| R14 docs | implemented | README + cards updated; remaining GEO lock is honest |
+
 ## Tests
 
-`python -m pytest tests/pertbench_long -q` after the 2026-09-22 long-horizon expansion: **76 passed, 5 skipped**.  
+`python -m pytest tests/pertbench_long -q` after the readiness fixes: **96 passed, 6 skipped**.  
 Skipped items are live model / Docker isolation paths (`not_run`).
 
 ## Not executed / not claimed

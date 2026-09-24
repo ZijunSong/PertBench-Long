@@ -238,19 +238,72 @@ def build_synthetic_context_store(
     return _store(records, np.vstack(rows), genes, ["synthetic multi-context campaign"])
 
 
+_SYNTH_KEYS = {
+    "episode_id",
+    "n_panel",
+    "experimental_budget",
+    "min_candidates",
+    "min_targets",
+    "a_family",
+    "seed",
+    "split_variant",
+    "min_cells",
+    "resource_profile",
+    "context_ids",
+    "source_context",
+    "target_contexts",
+}
+
+
+def _synth_kwargs(kwargs: dict) -> dict:
+    from pertbench_long.errors import ConfigError
+
+    unknown = set(kwargs) - _SYNTH_KEYS
+    if unknown:
+        raise ConfigError(f"unknown builder arguments: {sorted(unknown)}")
+    return kwargs
+
+
 def build_synthetic_dose_episode(dest: Path, **kwargs):
     from pertbench_long.episodes.builders.chemical_dose import build_chemical_dose_episode
 
-    return build_chemical_dose_episode(build_synthetic_dose_store(), dest=dest, episode_id=kwargs.pop("episode_id", "sciplex_dose_synth_0001"), synthetic=True, study_name="synthetic_sciplex", data_release_id="synthetic_dose_v1", **kwargs)
+    kwargs = _synth_kwargs(kwargs)
+    return build_chemical_dose_episode(
+        build_synthetic_dose_store(),
+        dest=dest,
+        episode_id=kwargs.pop("episode_id", "sciplex_dose_synth_0001"),
+        synthetic=True,
+        study_name="synthetic_sciplex",
+        data_release_id="synthetic_dose_v1",
+        **kwargs,
+    )
 
 
 def build_synthetic_pair_episode(dest: Path, **kwargs):
     from pertbench_long.episodes.builders.genetic_pair import build_genetic_pair_episode
 
-    return build_genetic_pair_episode(build_synthetic_pair_store(), dest=dest, episode_id=kwargs.pop("episode_id", "norman_pair_synth_0001"), synthetic=True, study_name="synthetic_norman", data_release_id="synthetic_pair_v1", **kwargs)
+    kwargs = _synth_kwargs(kwargs)
+    return build_genetic_pair_episode(
+        build_synthetic_pair_store(),
+        dest=dest,
+        episode_id=kwargs.pop("episode_id", "norman_pair_synth_0001"),
+        synthetic=True,
+        study_name="synthetic_norman",
+        data_release_id="synthetic_pair_v1",
+        **kwargs,
+    )
 
 
 def build_synthetic_context_episode(dest: Path, **kwargs):
     from pertbench_long.episodes.builders.context_campaign import build_context_campaign_episode
 
-    return build_context_campaign_episode(build_synthetic_context_store(), dest=dest, episode_id=kwargs.pop("episode_id", "sciplex_context_synth_0001"), synthetic=True, study_name="synthetic_sciplex_ctx", data_release_id="synthetic_context_v1", **kwargs)
+    kwargs = _synth_kwargs(kwargs)
+    return build_context_campaign_episode(
+        build_synthetic_context_store(),
+        dest=dest,
+        episode_id=kwargs.pop("episode_id", "sciplex_context_synth_0001"),
+        synthetic=True,
+        study_name="synthetic_sciplex_ctx",
+        data_release_id="synthetic_context_v1",
+        **kwargs,
+    )

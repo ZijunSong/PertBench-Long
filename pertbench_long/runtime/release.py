@@ -36,6 +36,9 @@ def _expected_hashes(public_spec) -> dict[str, str]:
         expected[str(public_spec.gene_universe_artifact)] = str(meta["gene_universe_sha256"])
     if meta.get("submission_contract_sha256"):
         expected["submission_contract.json"] = str(meta["submission_contract_sha256"])
+    for rel, digest in dict(meta.get("public_files") or {}).items():
+        if digest:
+            expected[str(rel)] = str(digest)
     return expected
 
 
@@ -101,6 +104,8 @@ def check_release(public_dir: Path, private_manifest: Path) -> dict[str, Any]:
     if sha256_file(labels_path) != private_spec.private_data_hash:
         raise IntegrityError("label artifact hash does not match private_data_hash")
 
+    _reject_treated_in_controls(public_dir, private_spec)
+
     q_arts = (private_spec.provenance or {}).get("queryable_artifacts") or []
     for item in q_arts:
         exp_id = item.get("experiment_id")
@@ -140,9 +145,31 @@ def copy_declared_public_inputs(public_dir: Path, workspace: Path, public_spec) 
         dest = workspace / "evidence" / name
         _shutil.copyfile(src, dest)
         copied.append(f"evidence/{name}")
-    for rel in (public_spec.gene_universe_artifact, "episode.json", "submission_contract.json"):
+    protocol_files = [public_spec.gene_universe_artifact, "episode.json", "submission_contract.json"]
+    protocol_files.extend(sorted(dict(getattr(public_spec, "artifact_metadata", {}) or {}).get("public_files") or {}))
+    for rel in protocol_files:
         src = public_dir / rel
         if src.exists():
-            _shutil.copyfile(src, workspace / Path(rel).name)
+            dest = workspace / Path(rel).name
+            _shutil.copyfile(src, dest)
             copied.append(Path(rel).name)
     return copied
+
+
+def _reject_treated_in_controls(public_dir: Path, private_spec) -> None:
+    t_ids = set(getattr(private_spec, "target_condition_ids", None) or [])
+    q_ids = set(getattr(private_spec, "queryable_condition_ids", None) or [])
+    forbidden = t_ids | q_ids
+    if not forbidden:
+        return
+    ctrl = public_dir / "evidence" / "ev_controls_001.h5ad"
+    if not ctrl.exists():
+        return
+    import anndata as ad
+
+    obs = ad.read_h5ad(ctrl).obs
+    if "condition_id" not in obs.columns:
+        return
+    leaked = set(obs["condition_id"].astype(str)) & forbidden
+    if leaked:
+        raise IntegrityError(f"control artifact contains Q/T treated conditions: {sorted(leaked)[:8]}")

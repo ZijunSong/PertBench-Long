@@ -94,6 +94,17 @@ def visible_effect_table(
     return pd.DataFrame(rows)
 
 
+def load_public_control_mapping(public_root: Path) -> dict[str, str] | None:
+    path = Path(public_root) / "reference_mapping.json"
+    if not path.exists():
+        return None
+    import json
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mapping = payload.get("mapping") if isinstance(payload, dict) else None
+    return dict(mapping) if mapping else None
+
+
 def evidence_paths_from_spec(public_root: Path, workspace: Path, public_spec) -> tuple[list[Path], Path]:
     meta = dict(public_spec.artifact_metadata or {})
     initial = meta.get("initial") or {}

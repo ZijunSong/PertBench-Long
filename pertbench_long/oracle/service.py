@@ -55,6 +55,10 @@ class Oracle:
                 "context_id": c.context_id or c.cell_type,
                 "condition_id": c.condition_id,
                 "perturbation_kind": c.perturbation_kind,
+                "time": c.time,
+                "time_unit": c.time_unit,
+                "perturbation_components": list(c.perturbation_components),
+                "control_group_id": c.control_group_id,
             }
             for c in self.spec.public.candidate_experiments
         ]

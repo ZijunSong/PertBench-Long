@@ -1,0 +1,26 @@
+dataset: sciplex3
+adapter: sciplex
+protocol: context_campaign_acquisition_v1
+data_root: ${PERTBENCH_DATA_ROOT}
+data_dir: ${PERTBENCH_DATA_ROOT}/prepared/sciplex3/v1
+source_manifest: ${PERTBENCH_DATA_ROOT}/prepared/sciplex3/v1/provenance.json
+matrix:
+  file: matrix.h5ad
+  layer: counts
+  matrix_kind: counts
+  require_verified_provenance: true
+episode_id: sciplex_context_pilot_0001
+partition: pilot
+split_variant: few_shot_target_context
+source_context: A549
+target_contexts: [K562, MCF7]
+experimental_budget: 16
+min_candidates: 48
+min_targets: 12
+n_panel: 256
+seed: 1701
+reference_policy: matched_vehicle_v1
+resource_profile: long_cpu_v1
+requested_track: pilot
+data_release_id: local_unreleased
+output: ${PERTBENCH_DATA_ROOT}/episodes

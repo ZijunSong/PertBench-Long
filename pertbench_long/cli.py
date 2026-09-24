@@ -98,6 +98,28 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--config", default=None)
     build.add_argument("--fixture", choices=["synthetic", "pbmc", "synthetic_dose", "synthetic_pair", "synthetic_context"], default=None)
     build.add_argument("--output", default=None)
+    build.add_argument("--dataset", default=None)
+    build.add_argument("--adapter", default=None)
+    build.add_argument("--protocol", default=None)
+    build.add_argument("--data-dir", default=None)
+    build.add_argument("--data-root", default=None)
+
+    fetch = sub.add_parser("fetch-data", help="Fetch or verify locked source files; never invents URLs")
+    fetch.add_argument("--dataset", required=True, choices=["sciplex3", "norman2019"])
+    fetch.add_argument("--data-root", default=None)
+    fetch.add_argument("--manifest", default=None)
+    fetch.add_argument("--offline", action="store_true")
+
+    prepare = sub.add_parser("prepare-data", help="Convert author-format counts+metadata into the standard prepared input")
+    prepare.add_argument("--dataset", required=True, choices=["sciplex3", "norman2019"])
+    prepare.add_argument("--data-root", default=None)
+    prepare.add_argument("--source-dir", default=None)
+    prepare.add_argument("--output", default=None)
+
+    doctor_data = sub.add_parser("doctor-data", help="Diagnose DATA_ROOT readiness without building episodes")
+    doctor_data.add_argument("--config", default=None)
+    doctor_data.add_argument("--dataset", default=None)
+    doctor_data.add_argument("--data-root", default=None)
 
     audit = sub.add_parser("audit-conditions", help="Audit eligible O/Q/T scale for a source adapter")
     audit.add_argument("--config", required=True)
@@ -262,11 +284,21 @@ def _cmd_audit_conditions(args: argparse.Namespace) -> int:
     if adapter == "sciplex":
         from pertbench_long.data.adapters.sciplex import import_sciplex
 
-        store = import_sciplex(data_dir, manifest_path=cfg.get("manifest"), declared_matrix_kind=cfg.get("matrix_kind", "counts"))
+        store = import_sciplex(
+            data_dir,
+            manifest_path=cfg.get("manifest") or cfg.get("source_manifest"),
+            declared_matrix_kind=cfg.get("matrix_kind") or (cfg.get("matrix") or {}).get("matrix_kind"),
+            matrix_layer=(cfg.get("matrix") or {}).get("layer"),
+        )
     elif adapter == "norman":
         from pertbench_long.data.adapters.norman import import_norman
 
-        store = import_norman(data_dir, manifest_path=cfg.get("manifest"), declared_matrix_kind=cfg.get("matrix_kind", "counts"))
+        store = import_norman(
+            data_dir,
+            manifest_path=cfg.get("manifest") or cfg.get("source_manifest"),
+            declared_matrix_kind=cfg.get("matrix_kind") or (cfg.get("matrix") or {}).get("matrix_kind"),
+            matrix_layer=(cfg.get("matrix") or {}).get("layer"),
+        )
     else:
         raise ConfigError("audit-conditions requires adapter=sciplex or adapter=norman and an explicit data_dir")
     report = audit_conditions(
@@ -285,11 +317,14 @@ def _cmd_audit_conditions(args: argparse.Namespace) -> int:
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
+    from pertbench_long.episodes.build_config import validate_build_config
     from pertbench_long.episodes.builder import build_episode_from_store, build_synthetic_episode
 
-    cfg = _load_yaml(Path(args.config)) if args.config else {}
+    cfg = validate_build_config(_load_yaml(Path(args.config))) if args.config else {}
     dest = Path(_pick(args.output, cfg.get("output"), "runs/episodes", name="output"))
-    fixture = _pick(args.fixture, cfg.get("fixture"), name="fixture", required=True)
+    fixture = _pick(args.fixture, cfg.get("fixture"), name="fixture")
+    if fixture is None and (args.dataset or cfg.get("dataset") or cfg.get("adapter") or cfg.get("protocol")):
+        return _cmd_build_real(args, cfg, dest)
     if fixture == "synthetic":
         result = build_synthetic_episode(
             dest / "synthetic_pilot_001",
@@ -315,6 +350,8 @@ def _cmd_build(args: argparse.Namespace) -> int:
         result = build_synthetic_context_episode(dest / "sciplex_context_synth_0001")
         print(json.dumps(result, indent=2, default=str))
         return EXIT_OK
+    if fixture is None:
+        raise ConfigError("build-episodes requires --fixture or a real dataset/protocol config")
     if fixture != "pbmc":
         raise ConfigError("fixture must be synthetic, pbmc, synthetic_dose, synthetic_pair, or synthetic_context")
     from pertbench_long.data.adapter import import_tables
@@ -352,6 +389,127 @@ def _cmd_build(args: argparse.Namespace) -> int:
     )
     print(json.dumps(result, indent=2, default=str))
     return EXIT_OK
+
+
+def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -> int:
+    from pertbench_long.data.data_root import prepared_dir, resolve_data_root
+    from pertbench_long.episodes.build_config import resolve_relative
+    from pertbench_long.schemas.types import PROTOCOL_CHEMICAL_DOSE, PROTOCOL_CONTEXT_CAMPAIGN, PROTOCOL_GENETIC_PAIR
+
+    config_path = Path(args.config) if args.config else None
+    dataset = _pick(getattr(args, "dataset", None), cfg.get("dataset"), name="dataset", required=True)
+    adapter = _pick(getattr(args, "adapter", None), cfg.get("adapter"), dataset, name="adapter")
+    protocol = _pick(getattr(args, "protocol", None), cfg.get("protocol"), name="protocol", required=True)
+    data_dir = _pick(getattr(args, "data_dir", None), cfg.get("data_dir"), name="data_dir")
+    if data_dir is None and cfg.get("data_root"):
+        data_dir = str(prepared_dir(resolve_data_root(cfg.get("data_root")), dataset, "v1"))
+    elif data_dir is None and getattr(args, "data_root", None):
+        data_dir = str(prepared_dir(resolve_data_root(args.data_root), dataset, "v1"))
+    data_path = resolve_relative(data_dir, config_path=config_path) if data_dir else None
+    if data_path is None or not data_path.exists():
+        raise ConfigError(f"real build data_dir is missing: {data_path}; synthetic fallback is forbidden")
+    matrix_cfg = dict(cfg.get("matrix") or {})
+    kind = matrix_cfg.get("matrix_kind") or cfg.get("matrix_kind")
+    layer = matrix_cfg.get("layer")
+    manifest = resolve_relative(cfg.get("source_manifest") or cfg.get("manifest"), config_path=config_path)
+    if adapter == "sciplex":
+        from pertbench_long.data.adapters.sciplex import import_sciplex
+
+        store = import_sciplex(data_path, manifest_path=manifest, declared_matrix_kind=kind, matrix_layer=layer)
+    elif adapter == "norman":
+        from pertbench_long.data.adapters.norman import import_norman
+
+        store = import_norman(data_path, manifest_path=manifest, declared_matrix_kind=kind, matrix_layer=layer)
+    else:
+        raise ConfigError(f"unsupported adapter {adapter}")
+    episode_id = str(cfg.get("episode_id") or f"{dataset}_pilot_0001")
+    common = {
+        "dest": dest / episode_id,
+        "episode_id": episode_id,
+        "synthetic": False,
+        "experimental_budget": int(cfg.get("experimental_budget", 8)),
+        "min_candidates": int(cfg.get("min_candidates", 24)),
+        "min_targets": int(cfg.get("min_targets", 8)),
+        "n_panel": None if cfg.get("n_panel") is None else int(cfg.get("n_panel")),
+        "min_cells": int(cfg.get("min_cells", 5)),
+        "a_family": float(cfg.get("a_family", 0.5)),
+        "seed": int(cfg.get("seed", 1701)),
+        "partition": cfg.get("partition"),
+        "resource_profile": cfg.get("resource_profile", "long_cpu_v1"),
+        "requested_track": cfg.get("requested_track", "pilot"),
+        "data_release_id": cfg.get("data_release_id", "local_unreleased"),
+        "provenance_verified": bool(matrix_cfg.get("require_verified_provenance") and manifest),
+        "source_verified": bool((data_path / "provenance.json").exists()),
+        "scoring_scale_hash": cfg.get("scoring_scale_hash"),
+        "study_name": cfg.get("study") or dataset,
+    }
+    if protocol == PROTOCOL_CHEMICAL_DOSE:
+        from pertbench_long.episodes.builders.chemical_dose import build_chemical_dose_episode
+
+        result = build_chemical_dose_episode(
+            store,
+            split_variant=cfg.get("split_variant", "dose_interpolation"),
+            context_ids=cfg.get("context_ids"),
+            **common,
+        )
+    elif protocol == PROTOCOL_GENETIC_PAIR:
+        from pertbench_long.episodes.builders.genetic_pair import build_genetic_pair_episode
+
+        result = build_genetic_pair_episode(store, split_variant=cfg.get("split_variant", "pair_holdout_seen_genes"), **common)
+    elif protocol == PROTOCOL_CONTEXT_CAMPAIGN:
+        from pertbench_long.episodes.builders.context_campaign import build_context_campaign_episode
+
+        result = build_context_campaign_episode(
+            store,
+            source_context=cfg.get("source_context", "A549"),
+            target_contexts=cfg.get("target_contexts"),
+            split_variant=cfg.get("split_variant", "few_shot_target_context"),
+            **common,
+        )
+    else:
+        raise ConfigError(f"protocol {protocol} is not a real-data build target")
+    if result.get("synthetic"):
+        raise ConfigError("real-data build produced a synthetic episode; refusing")
+    print(json.dumps(result, indent=2, default=str))
+    return EXIT_OK
+
+
+def _cmd_fetch(args: argparse.Namespace) -> int:
+    from pertbench_long.data.acquire import fetch_dataset
+
+    report = fetch_dataset(args.dataset, data_root=args.data_root, manifest_path=args.manifest, offline=bool(args.offline))
+    print(json.dumps(report.to_dict(), indent=2))
+    return EXIT_OK if report.status == "ok" else EXIT_CONFIG
+
+
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    from pertbench_long.data.data_root import prepared_dir, raw_dir, resolve_data_root
+
+    root = resolve_data_root(args.data_root)
+    source = Path(args.source_dir) if args.source_dir else raw_dir(root, args.dataset, f"{args.dataset}_v1")
+    dest = Path(args.output) if args.output else prepared_dir(root, args.dataset, "v1")
+    if args.dataset == "sciplex3":
+        from pertbench_long.data.prepare.sciplex import prepare_sciplex
+
+        result = prepare_sciplex(source, dest)
+    else:
+        from pertbench_long.data.prepare.norman import prepare_norman
+
+        result = prepare_norman(source, dest)
+    print(json.dumps(result, indent=2, default=str))
+    return EXIT_OK
+
+
+def _cmd_doctor_data(args: argparse.Namespace) -> int:
+    from pertbench_long.data.doctor import STATUS_READY_PILOT, doctor_data
+    from pertbench_long.episodes.build_config import validate_build_config
+
+    cfg = validate_build_config(_load_yaml(Path(args.config))) if args.config else {}
+    dataset = _pick(args.dataset, cfg.get("dataset"), name="dataset", required=True)
+    data_root = _pick(args.data_root, cfg.get("data_root"), name="data_root")
+    report = doctor_data(dataset=dataset, data_root=data_root)
+    print(json.dumps(report, indent=2, default=str))
+    return EXIT_OK if report.get("status") == STATUS_READY_PILOT else EXIT_CONFIG
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -685,6 +843,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         "list": lambda: _cmd_list(),
         "inspect-data": lambda: _cmd_inspect(args),
         "build-episodes": lambda: _cmd_build(args),
+        "fetch-data": lambda: _cmd_fetch(args),
+        "prepare-data": lambda: _cmd_prepare(args),
+        "doctor-data": lambda: _cmd_doctor_data(args),
         "audit-conditions": lambda: _cmd_audit_conditions(args),
         "validate": lambda: _cmd_validate(args),
         "smoke": lambda: _cmd_smoke(args),

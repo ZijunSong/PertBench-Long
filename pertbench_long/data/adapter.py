@@ -97,15 +97,29 @@ def _to_dense(x: Any) -> np.ndarray:
     return np.asarray(x, dtype=np.float64)
 
 
-def load_matrix_sparse(path: Path):
-    """Load h5ad without forcing a full dense copy."""
+def load_matrix_sparse(path: Path, *, layer: str | None = None):
+    """Load h5ad without forcing a full dense copy. Layer must be chosen when multiple exist."""
     suffix = path.suffix.lower()
     if suffix != ".h5ad":
-        return load_table(path)
+        matrix, obs_ids, genes = load_table(path)
+        return matrix, obs_ids, genes, None
     import anndata as ad
 
     adata = ad.read_h5ad(path, backed=None)
-    matrix = adata.X
+    layer_names = [str(k) for k in getattr(adata, "layers", {}) if k is not None]
+    if layer:
+        if layer == "X":
+            matrix = adata.X
+        elif layer not in adata.layers:
+            raise SchemaError(f"requested layer {layer!r} is not in {layer_names}")
+        else:
+            matrix = adata.layers[layer]
+    else:
+        if layer_names:
+            raise SchemaError(
+                f"h5ad has layers {layer_names}; choose layer explicitly instead of treating X as counts"
+            )
+        matrix = adata.X
     return matrix, [str(i) for i in adata.obs_names], [str(g) for g in adata.var_names], adata.obs.copy()
 
 

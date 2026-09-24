@@ -89,6 +89,10 @@ AGENT_REGISTRY = {
     "random_query": "available",
     "fixed_order_query": "available",
     "control_similarity_query": "available",
+    "nearest_dose_no_query": "available",
+    "log_dose_linear_no_query": "available",
+    "single_gene_additivity_no_query": "available",
+    "context_transfer_no_query": "available",
 }
 
 
@@ -331,7 +335,19 @@ class EpisodeRunner:
         if name == "scripted_mock":
             ScriptedMockAgent(policy=self.agent_kwargs.get("policy", "two_query")).run(router)
             return
-        if name in {"no_change", "no_change_neutral_onehot", "no_change_dev_prior", "mean_delta_no_query", "random_query", "fixed_order_query", "control_similarity_query"}:
+        if name in {
+            "no_change",
+            "no_change_neutral_onehot",
+            "no_change_dev_prior",
+            "mean_delta_no_query",
+            "random_query",
+            "fixed_order_query",
+            "control_similarity_query",
+            "nearest_dose_no_query",
+            "log_dose_linear_no_query",
+            "single_gene_additivity_no_query",
+            "context_transfer_no_query",
+        }:
             kwargs = dict(self.agent_kwargs)
             kwargs.pop("policy", None)
             run_baseline(name, broker, **kwargs)

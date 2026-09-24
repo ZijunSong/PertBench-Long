@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -35,6 +36,7 @@ def assign_pair_roles(
     min_candidates: int,
     min_targets: int,
     min_cells: int,
+    seed: int = 1701,
 ) -> dict[str, Any]:
     audit = audit_conditions(store, min_cells=min_cells, min_candidates=min_candidates, min_targets=min_targets, protocol=PROTOCOL_GENETIC_PAIR)
     controls = match_controls(store)
@@ -56,7 +58,11 @@ def assign_pair_roles(
             f"insufficient_eligible_conditions: only {len(usable_pairs)} pairs have single-gene support",
             details={"reason": "insufficient_eligible_conditions"},
         )
-    t_ids = usable_pairs[:min_targets]
+    usable_pairs = sorted(usable_pairs)
+    rng = random.Random(int(seed))
+    shuffled = usable_pairs[:]
+    rng.shuffle(shuffled)
+    t_ids = sorted(shuffled[:min_targets])
     t_set = set(t_ids)
     support_singles = []
     for cid in t_ids:
@@ -94,7 +100,15 @@ def build_genetic_pair_episode(
     data_release_id: str = "local_unreleased",
     min_cells: int = 5,
     a_family: float = 0.5,
-    **kwargs: Any,
+    seed: int = 1701,
+    partition: str | None = None,
+    resource_profile: str = "long_cpu_v1",
+    requested_track: str = "pilot",
+    label_estimand: str = "auto",
+    provenance_verified: bool = False,
+    source_verified: bool = False,
+    scoring_scale_hash: str | None = None,
+    development_episodes: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     roles = assign_pair_roles(
         store,
@@ -102,6 +116,7 @@ def build_genetic_pair_episode(
         min_candidates=min_candidates,
         min_targets=min_targets,
         min_cells=min_cells,
+        seed=seed,
     )
     return build_episode_from_condition_ids(
         store,
@@ -123,5 +138,14 @@ def build_genetic_pair_episode(
         min_targets=min_targets,
         n_panel=n_panel,
         a_family=a_family,
-        notes=["intervention=CRISPRa", f"split_variant={split_variant}"],
+        notes=["intervention=CRISPRa", f"split_variant={split_variant}", f"actual_Q={len(roles['Q'])}", f"actual_T={len(roles['T'])}"],
+        partition=partition or ("synthetic" if synthetic else None),
+        requested_track=requested_track,
+        label_estimand=label_estimand,
+        provenance_verified=provenance_verified,
+        source_verified=source_verified,
+        scoring_scale_hash=scoring_scale_hash,
+        development_episodes=development_episodes,
+        seed=seed,
+        resource_profile=resource_profile,
     )

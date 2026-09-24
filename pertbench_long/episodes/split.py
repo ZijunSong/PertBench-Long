@@ -41,16 +41,43 @@ def audit_split(
     public_data: bool = True,
     split_variant: str | None = None,
     control_mapping: Mapping[str, str] | None = None,
+    control_conditions: Sequence[str] | None = None,
     **_unused: Any,
 ) -> dict[str, Any]:
     validate_disjoint_roles(observed_obs, queryable_obs, target_obs, layer="observation")
     validate_disjoint_roles(observed_conditions, queryable_conditions, target_conditions, layer="condition")
     rec_by_id = {r.observation_id: r for r in records}
+    if control_conditions is None:
+        control_conditions = []
+        for oid in control_obs:
+            rec = rec_by_id.get(oid)
+            if rec:
+                control_conditions.append(rec.condition_id or rec.condition_key())
+        control_conditions = sorted(set(control_conditions))
     leaks = []
+    treated_qt = set(queryable_conditions) | set(target_conditions)
+    leaked_c = set(control_conditions) & treated_qt
+    for cid in sorted(leaked_c):
+        leaks.append({"type": "control_contains_treated_condition", "condition": cid})
+    mapping = dict(control_mapping or {})
+    for treated, ctrl in mapping.items():
+        if treated == ctrl:
+            leaks.append({"type": "self_control", "condition": treated})
+        if ctrl not in set(control_conditions):
+            leaks.append({"type": "mapped_control_not_in_C", "condition": treated, "control": ctrl})
     for oid in list(observed_obs) + list(queryable_obs):
         rec = rec_by_id.get(oid)
         if rec and rec.condition_key() in set(target_conditions):
             leaks.append({"type": "condition_exposure", "observation_id": oid, "condition": rec.condition_key()})
+    c_source = {
+        rec_by_id[oid].source_identity()
+        for oid in control_obs
+        if oid in rec_by_id and rec_by_id[oid].source_identity()
+    }
+    for oid in list(queryable_obs) + list(target_obs):
+        rec = rec_by_id.get(oid)
+        if rec and rec.source_identity() and rec.source_identity() in c_source and rec.perturbation_kind != "control":
+            leaks.append({"type": "source_identity_leak", "observation_id": oid, "source_identity": list(rec.source_identity())})
     development_overlap = []
     if development_target_conditions:
         overlap = set(development_target_conditions) & set(target_conditions)
@@ -61,6 +88,10 @@ def audit_split(
     if leaks:
         status = "reject"
         flags.append("canonical_or_condition_overlap_with_T")
+        if leaked_c or any(item.get("type") == "self_control" for item in leaks):
+            flags.append("control_role_contains_treated_measurement")
+        if any(item.get("type") == "source_identity_leak" for item in leaks):
+            flags.append("source_identity_leak")
     if development_overlap:
         if public_data:
             status = "pilot_not_private_independent_test"
@@ -227,20 +258,42 @@ def audit_context_campaign_split(
     return audit
 
 
+EVAL_PARTITIONS = frozenset({"eval", "evaluation"})
+DEV_PARTITIONS = frozenset({"dev", "development", "pilot", "train"})
+
+
 def audit_release_cross_contamination(
     episodes: Sequence[Mapping[str, Any]],
     *,
     allow_shared_support: bool = False,
 ) -> dict[str, Any]:
-    """Detect a development answer becoming an evaluation query or target."""
+    """Detect a development public condition becoming an evaluation target.
+
+    Missing/unknown partition is a failure, not a pass. Shared support may
+    reuse O/Q calibration conditions but never a hidden eval T.
+    """
     by_partition: dict[str, dict[str, set[str]]] = {}
     for item in episodes:
-        part = str(item.get("partition") or "unknown")
+        raw = item.get("partition")
+        if raw in {None, "", "unknown"}:
+            raise SplitLeakError("release partition is missing", details={"episode": item.get("episode_id")})
+        part = str(raw)
         bucket = by_partition.setdefault(part, {"T": set(), "Q": set(), "O": set()})
         bucket["T"].update(item.get("target_condition_ids") or [])
         bucket["Q"].update(item.get("queryable_condition_ids") or [])
         bucket["O"].update(item.get("observed_condition_ids") or [])
     leaks = []
+    public_dev: set[str] = set()
+    for part, bucket in by_partition.items():
+        if part in DEV_PARTITIONS or part not in EVAL_PARTITIONS:
+            public_dev |= bucket["O"] | bucket["Q"] | bucket["T"]
+    eval_t: set[str] = set()
+    for part, bucket in by_partition.items():
+        if part in EVAL_PARTITIONS:
+            eval_t |= bucket["T"]
+    hidden_as_public = eval_t & public_dev
+    if hidden_as_public:
+        leaks.append({"type": "eval_target_in_public_dev", "conditions": sorted(hidden_as_public)[:32]})
     dev = by_partition.get("dev") or by_partition.get("development")
     ev = by_partition.get("eval") or by_partition.get("evaluation")
     if dev and ev:

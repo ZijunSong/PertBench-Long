@@ -8,6 +8,7 @@ from typing import Mapping
 from pertbench_long.data.adapter import CanonicalStore
 from pertbench_long.data.adapters.base import load_acquisition_manifest, require_files, resolve_source_dir
 from pertbench_long.data.adapters.sciplex import _import_h5ad_conditions
+from pertbench_long.data.parsing import require_matrix_kind
 from pertbench_long.errors import SchemaError
 from pertbench_long.schemas.conditions import (
     CONTEXT_CELL_LINE,
@@ -29,8 +30,9 @@ def import_norman(
     study: str = "norman2019",
     species: str = "human",
     assay: str = "scrna",
-    declared_matrix_kind: str = "counts",
+    declared_matrix_kind: str | None = None,
     matrix_filename: str = "matrix.h5ad",
+    matrix_layer: str | None = None,
 ) -> CanonicalStore:
     root = resolve_source_dir(data_dir, dataset_id="norman2019")
     field_map = {
@@ -43,23 +45,26 @@ def import_norman(
         "control_flag": "is_control",
     }
     required = (matrix_filename,)
+    hashes = None
     if manifest_path is not None:
         spec = load_acquisition_manifest(manifest_path)
         field_map.update(spec.field_map)
         if spec.required_files:
             required = spec.required_files
-    files = require_files(root, required)
+        hashes = getattr(spec, "file_hashes", None)
+    files = require_files(root, required, hashes=hashes)
     matrix_path = files.get(matrix_filename) or next(iter(files.values()))
     store = _import_h5ad_conditions(
         matrix_path,
         study=study,
         species=species,
         assay=assay,
-        declared_matrix_kind=declared_matrix_kind,
+        declared_matrix_kind=require_matrix_kind(declared_matrix_kind),
         field_map=field_map,
         perturbation_kind_default=PERTURBATION_GENETIC_SINGLE,
         context_type=CONTEXT_CELL_LINE,
         require_exact_dose=False,
+        matrix_layer=matrix_layer,
         source_notes=["norman2019 CRISPRa adapter; pairs are unordered; not all knockouts"],
     )
     rewritten: list[ExperimentRecord] = []
@@ -87,7 +92,7 @@ def import_norman(
             rec,
             perturbation_kind=kind,
             perturbation_components=components,
-            perturbation_id="+".join(components) if kind != PERTURBATION_CONTROL else "Control",
+            perturbation_id="+".join(components) if kind != PERTURBATION_CONTROL else rec.perturbation_id,
             condition_id=cid,
             identity_version="cid_v1",
         )

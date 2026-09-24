@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +22,7 @@ class SourceSpec:
     field_map: dict[str, str]
     software: dict[str, Any]
     notes: tuple[str, ...]
+    file_hashes: dict[str, str] = field(default_factory=dict)
 
 
 def load_acquisition_manifest(path: Path | str) -> SourceSpec:
@@ -29,6 +30,7 @@ def load_acquisition_manifest(path: Path | str) -> SourceSpec:
     if not isinstance(payload, Mapping):
         raise SchemaError("acquisition manifest must be an object")
     required = payload.get("required_files") or []
+    hashes = {str(k): str(v) for k, v in dict(payload.get("file_hashes") or {}).items() if v}
     return SourceSpec(
         dataset_id=str(payload.get("dataset_id") or ""),
         accession=str(payload.get("accession") or ""),
@@ -39,6 +41,7 @@ def load_acquisition_manifest(path: Path | str) -> SourceSpec:
         field_map=dict(payload.get("field_map") or {}),
         software=dict(payload.get("software") or {}),
         notes=tuple(str(x) for x in (payload.get("notes") or [])),
+        file_hashes=hashes,
     )
 
 

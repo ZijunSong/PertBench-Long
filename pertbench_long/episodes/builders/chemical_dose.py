@@ -10,7 +10,7 @@ from pertbench_long.data.adapter import CanonicalStore
 from pertbench_long.data.audit_conditions import audit_conditions, match_controls, require_scale
 from pertbench_long.episodes.builders.common import build_episode_from_condition_ids
 from pertbench_long.errors import InsufficientEligible
-from pertbench_long.schemas.conditions import PERTURBATION_CHEMICAL, PERTURBATION_CONTROL, canonical_dose_nm
+from pertbench_long.schemas.conditions import PERTURBATION_CHEMICAL, PERTURBATION_CONTROL, canonical_dose_nm, canonical_time_s
 from pertbench_long.schemas.types import PROTOCOL_CHEMICAL_DOSE
 
 
@@ -22,8 +22,16 @@ DOSE_OBJECTIVE = (
 )
 
 
-def _dose_groups(store: CanonicalStore, eligible: Sequence[str], controls: dict[str, str]) -> dict[tuple[str, str], list[str]]:
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+def _dose_group_key(rec) -> tuple[str, str, str, str]:
+    try:
+        time_key = str(canonical_time_s(rec.time, rec.time_unit)) if rec.time is not None else "none"
+    except Exception:
+        time_key = f"{rec.time}|{rec.time_unit}"
+    return (rec.resolved_context_id(), rec.perturbation_id, time_key, rec.assay or "unknown")
+
+
+def _dose_groups(store: CanonicalStore, eligible: Sequence[str], controls: dict[str, str]) -> dict[tuple[str, str, str, str], list[str]]:
+    groups: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
     for cid in eligible:
         rec = store.records[store.condition_to_rows[cid][0]]
         if rec.perturbation_kind not in {PERTURBATION_CHEMICAL, "unknown"}:
@@ -32,7 +40,7 @@ def _dose_groups(store: CanonicalStore, eligible: Sequence[str], controls: dict[
             continue
         if rec.dose is None:
             continue
-        groups[(rec.resolved_context_id(), rec.perturbation_id)].append(cid)
+        groups[_dose_group_key(rec)].append(cid)
     ordered = {}
     for key, ids in groups.items():
         ordered[key] = sorted(ids, key=lambda cid: canonical_dose_nm(store.records[store.condition_to_rows[cid][0]].dose, store.records[store.condition_to_rows[cid][0]].dose_unit))
@@ -112,7 +120,15 @@ def build_chemical_dose_episode(
     data_release_id: str = "local_unreleased",
     min_cells: int = 5,
     a_family: float = 0.5,
-    **kwargs: Any,
+    seed: int = 1701,
+    partition: str | None = None,
+    resource_profile: str = "long_cpu_v1",
+    requested_track: str = "pilot",
+    label_estimand: str = "auto",
+    provenance_verified: bool = False,
+    source_verified: bool = False,
+    scoring_scale_hash: str | None = None,
+    development_episodes: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     roles = assign_dose_roles(
         store,
@@ -142,5 +158,14 @@ def build_chemical_dose_episode(
         min_targets=min_targets,
         n_panel=n_panel,
         a_family=a_family,
-        notes=[f"split_variant={split_variant}"],
+        notes=[f"split_variant={split_variant}", f"requested={min_candidates}/{min_targets}", f"actual_Q={len(roles['Q'])}", f"actual_T={len(roles['T'])}"],
+        partition=partition or ("synthetic" if synthetic else None),
+        requested_track=requested_track,
+        label_estimand=label_estimand,
+        provenance_verified=provenance_verified,
+        source_verified=source_verified,
+        scoring_scale_hash=scoring_scale_hash,
+        development_episodes=development_episodes,
+        seed=seed,
+        resource_profile=resource_profile,
     )

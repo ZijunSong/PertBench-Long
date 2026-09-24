@@ -4,6 +4,40 @@
   "release_id": "norman2019_v1",
   "license": "user_must_confirm_source_license",
   "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "author_entry": "https://github.com/thomasmaxwellnorman/Perturbseq_GI",
+  "raw_sources": [
+    {
+      "name": "cell_identities.csv",
+      "role": "cell_guide_identity",
+      "accession": "GSE133344",
+      "author_entry": "https://github.com/thomasmaxwellnorman/Perturbseq_GI",
+      "url": null,
+      "sha256": null,
+      "format": "csv",
+      "status": "user_must_obtain",
+      "note": "Author cell_identities table mapping barcodes to guide identities. GEO file list was not locked here."
+    },
+    {
+      "name": "counts.csv",
+      "role": "expression_counts",
+      "accession": "GSE133344",
+      "author_entry": "https://github.com/thomasmaxwellnorman/Perturbseq_GI",
+      "url": null,
+      "sha256": null,
+      "format": "csv",
+      "status": "user_must_obtain",
+      "note": "Cell Ranger count matrix aligned to the same barcodes. Missing pairs are not imputed."
+    },
+    {
+      "name": "guides.csv",
+      "role": "optional_guide_map",
+      "url": null,
+      "sha256": null,
+      "format": "csv",
+      "status": "optional",
+      "note": "Optional guide-to-gene/NTC table. Non-targeting tokens are not treated as a second intervened gene."
+    }
+  ],
   "required_files": ["matrix.h5ad"],
   "field_map": {
     "cell_type": "cell_type",
@@ -16,6 +50,7 @@
   },
   "software": {
     "adapter": "pertbench_long.data.adapters.norman.import_norman",
+    "prepare": "pertbench_long.data.prepare.norman.prepare_norman",
     "identity_version": "cid_v1",
     "intervention": "CRISPRa"
   },

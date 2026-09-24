@@ -11,10 +11,11 @@ import numpy as np
 
 from pertbench_long.data.adapter import CanonicalStore
 from pertbench_long.data.preprocess import public_export_fingerprint, select_panel_from_visible, to_effect_space
-from pertbench_long.data.sparse_ops import extract_dense_block
+from pertbench_long.data.sparse_ops import extract_dense_block, finite_check_sample
 from pertbench_long.episodes.export import export_public_bundle
-from pertbench_long.episodes.split import write_split_audit
-from pertbench_long.errors import AmbiguousCondition, InsufficientEligible, UnsupportedProfile
+from pertbench_long.episodes.readiness import resolve_scoring_eligibility
+from pertbench_long.episodes.split import audit_release_cross_contamination, write_split_audit
+from pertbench_long.errors import AmbiguousCondition, InsufficientEligible, SplitLeakError, UnsupportedProfile
 from pertbench_long.evaluation.contract import CONTRACT_FILENAME, public_submission_contract
 from pertbench_long.evaluation.labels import build_lognorm_cellmean_delta_labels
 from pertbench_long.hashes import gene_order_hash, sha256_file, sha256_json
@@ -80,6 +81,14 @@ def build_episode_from_condition_ids(
     a_family: float = 0.5,
     split_audit: dict[str, Any] | None = None,
     notes: list[str] | None = None,
+    partition: str | None = None,
+    requested_track: str = "pilot",
+    label_estimand: str = "auto",
+    provenance_verified: bool = False,
+    source_verified: bool = False,
+    scoring_scale_hash: str | None = None,
+    development_episodes: Sequence[Mapping[str, Any]] | None = None,
+    seed: int | None = None,
 ) -> dict[str, Any]:
     task = get_task(protocol)
     if experimental_budget < 0:
@@ -105,19 +114,52 @@ def build_episode_from_condition_ids(
         ctrl = control_mapping.get(cid)
         if not ctrl:
             raise UnsupportedProfile(f"control mapping missing for {cid}")
+        if ctrl == cid:
+            raise SplitLeakError("target or query condition mapped to itself as control", details={"condition": cid})
         require_condition(store, ctrl, where="control_mapping")
+        if ctrl not in set(c_ids):
+            raise SplitLeakError("control mapping does not point at a declared C condition", details={"condition": cid, "control": ctrl})
+    treated_qt = set(q_ids) | set(t_ids)
+    if set(c_ids) & treated_qt:
+        raise SplitLeakError(
+            "C contains Q/T treated conditions",
+            details={"overlap": sorted(set(c_ids) & treated_qt)},
+        )
 
-    scoring_track = "official"
-    if store.summary.matrix_kind in {"unknown", "scaled"} or synthetic:
-        scoring_track = "diagnostic" if store.summary.matrix_kind in {"unknown", "scaled"} else "pilot"
-    if synthetic:
-        scoring_track = "pilot"
+    resolved_partition = partition or ("synthetic" if synthetic else None)
+    if not synthetic and not resolved_partition:
+        raise UnsupportedProfile("real episodes require an explicit partition")
+    if development_episodes is not None:
+        audit_release_cross_contamination(
+            [
+                *list(development_episodes),
+                {
+                    "episode_id": episode_id,
+                    "partition": resolved_partition,
+                    "target_condition_ids": t_ids,
+                    "queryable_condition_ids": q_ids,
+                    "observed_condition_ids": o_ids,
+                },
+            ]
+        )
+
+    eligibility = resolve_scoring_eligibility(
+        synthetic=synthetic,
+        matrix_kind=store.summary.matrix_kind,
+        data_release_id=data_release_id,
+        requested_track=requested_track,
+        provenance_verified=provenance_verified,
+        source_verified=source_verified,
+        split_audited=True,
+        labels_validated=store.summary.matrix_kind not in {"unknown", "scaled"},
+        scoring_scale_hash=scoring_scale_hash,
+    )
+    scoring_track = eligibility["scoring_track"]
     if store.summary.matrix_kind in {"unknown", "scaled"}:
-        effect_matrix = extract_dense_block(store.matrix, range(int(store.matrix.shape[0])))
-        if not np.all(np.isfinite(effect_matrix)):
-            raise UnsupportedProfile("diagnostic matrix contains NaN/Inf")
         if task.label_profile == LABEL_LOGNORM_CELLMEAN_DELTA_V1:
             raise UnsupportedProfile("unknown/scaled matrices cannot enter lognorm_cellmean_delta_v1")
+        finite_check_sample(store.matrix)
+        effect_matrix = store.matrix
     else:
         effect_matrix = to_effect_space(store.matrix, store.summary.matrix_kind, full_universe=store.matrix)
 
@@ -140,7 +182,7 @@ def build_episode_from_condition_ids(
         panel_policy = "episode_specific_from_O_plus_C"
     gene_index = [store.gene_ids.index(g) for g in genes]
 
-    audit = split_audit or task.split_validator(
+    computed_audit = task.split_validator(
         store.records,
         observed_obs=o_obs,
         queryable_obs=q_obs,
@@ -149,11 +191,15 @@ def build_episode_from_condition_ids(
         observed_conditions=o_ids,
         queryable_conditions=q_ids,
         target_conditions=t_ids,
+        control_conditions=c_ids,
         protocol=protocol,
         public_data=not synthetic,
         split_variant=split_variant,
         control_mapping=dict(control_mapping),
     )
+    if split_audit is not None and split_audit.get("fingerprint") != computed_audit.get("fingerprint"):
+        raise SplitLeakError("stale split_audit does not match the current O/Q/T assignment")
+    audit = computed_audit
 
     dest = Path(dest)
     public_dir = dest / "public"
@@ -225,6 +271,7 @@ def build_episode_from_condition_ids(
     target_to_cond = {}
     stim_ctrl = {}
     donors: dict[str, tuple[list, list]] = {}
+    replicates: dict[str, tuple[list, list]] = {}
     for i, cid in enumerate(t_ids, start=1):
         tid = f"t_{i:02d}"
         rec = _record_for(store, cid)
@@ -236,6 +283,10 @@ def build_episode_from_condition_ids(
         donors[tid] = (
             [store.records[j].donor for j in store.condition_to_rows[cid]],
             [store.records[j].donor for j in store.condition_to_rows[ctrl_id]],
+        )
+        replicates[tid] = (
+            [store.records[j].replicate_id for j in store.condition_to_rows[cid]],
+            [store.records[j].replicate_id for j in store.condition_to_rows[ctrl_id]],
         )
         targets_meta.append(
             TargetDescription(
@@ -256,7 +307,13 @@ def build_episode_from_condition_ids(
         )
         target_to_cond[tid] = cid
 
-    labels = build_lognorm_cellmean_delta_labels(gene_ids=genes, targets=stim_ctrl, donors=donors)
+    labels = build_lognorm_cellmean_delta_labels(
+        gene_ids=genes,
+        targets=stim_ctrl,
+        donors=donors,
+        replicates=replicates,
+        estimand=label_estimand,
+    )
     label_path = private_dir / "labels.parquet"
     labels.to_parquet(label_path)
     label_card = {
@@ -275,8 +332,12 @@ def build_episode_from_condition_ids(
             "profile": SCORING_CONTINUOUS_AUBC_V1,
             "label_profile": LABEL_LOGNORM_CELLMEAN_DELTA_V1,
             "a_family": a_family,
+            "label_estimand": label_estimand,
+            "aggregation": labels.aggregation,
             "control_mapping": dict(sorted(control_mapping.items())),
             "matrix_kind": store.summary.matrix_kind,
+            "scale_source": eligibility["scale_source"],
+            "scoring_scale_hash": scoring_scale_hash,
         }
     )
     candidates = [
@@ -320,7 +381,9 @@ def build_episode_from_condition_ids(
         gene_panel_policy=panel_policy,
         related_family=f"{study_name}:{task.task_family}:{split_variant}",
         synthetic=synthetic,
-        notes=list(notes or []) + (["SYNTHETIC fixture; not for scientific conclusions"] if synthetic else []),
+        notes=list(notes or [])
+        + (["SYNTHETIC fixture; not for scientific conclusions"] if synthetic else [])
+        + [eligibility["a_family_note"]],
         artifact_metadata={
             "initial": initial,
             "controls": controls_art,
@@ -334,8 +397,15 @@ def build_episode_from_condition_ids(
         split_variant=split_variant,
         scoring_profile=SCORING_CONTINUOUS_AUBC_V1,
         cost_policy=COST_POLICY_UNIT_V1,
-        readiness="pilot" if synthetic else scoring_track,
-        data_provenance={"study": study_name, "synthetic": synthetic, "matrix_kind": store.summary.matrix_kind},
+        readiness=eligibility["readiness"],
+        data_provenance={
+            "study": study_name,
+            "synthetic": synthetic,
+            "matrix_kind": store.summary.matrix_kind,
+            "partition": resolved_partition,
+            "seed": seed,
+            **{k: eligibility[k] for k in ("source_verified", "labels_validated", "split_audited", "scale_source")},
+        },
     )
     public_path = public_dir / "episode.json"
     public_path.write_text(json.dumps(public.to_dict(), indent=2), encoding="utf-8")
@@ -363,6 +433,30 @@ def build_episode_from_condition_ids(
     pd.DataFrame(public_conditions).to_parquet(public_dir / "conditions.parquet", index=False)
     pd.DataFrame([asdict(t) for t in targets_meta]).to_parquet(public_dir / "targets.parquet", index=False)
     (public_dir / "task.md").write_text(objective + "\n", encoding="utf-8")
+    mapping_path = public_dir / "reference_mapping.json"
+    mapping_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "policy": reference_policy,
+                "mapping": dict(control_mapping),
+                "notes": ["IDs only; Q/T measurements are not included"],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    extra_public = {
+        "task.md": sha256_file(public_dir / "task.md"),
+        "conditions.parquet": sha256_file(public_dir / "conditions.parquet"),
+        "targets.parquet": sha256_file(public_dir / "targets.parquet"),
+        "gene_panel.tsv": sha256_file(public_dir / "gene_panel.tsv"),
+        "reference_mapping.json": sha256_file(mapping_path),
+    }
+    public.artifact_metadata["public_files"] = extra_public
+    public.artifact_metadata["reference_mapping"] = "reference_mapping.json"
+    public_path.write_text(json.dumps(public.to_dict(), indent=2), encoding="utf-8")
+    validate_public_payload(json.loads(public_path.read_text()))
 
     private_payload = {
         "schema_version": SCHEMA_VERSION_V2,
@@ -377,13 +471,16 @@ def build_episode_from_condition_ids(
         "target_id_to_condition": target_to_cond,
         "label_artifact": "labels.parquet",
         "source_inventory_id": store.summary.gene_order_hash,
-        "split_config": {"split_variant": split_variant, "protocol": protocol},
+        "split_config": {"split_variant": split_variant, "protocol": protocol, "partition": resolved_partition, "seed": seed},
         "scoring_config": {
             "metric": "continuous_effect",
             "scoring_profile": SCORING_CONTINUOUS_AUBC_V1,
             "label_profile": LABEL_LOGNORM_CELLMEAN_DELTA_V1,
             "scoring_track": scoring_track,
             "a_family": a_family,
+            "label_estimand": label_estimand,
+            "scale_source": eligibility["scale_source"],
+            "scoring_scale_hash": scoring_scale_hash,
         },
         "private_data_hash": sha256_file(label_path),
         "development_group": "synthetic" if synthetic else study_name,
@@ -399,7 +496,7 @@ def build_episode_from_condition_ids(
         },
         "control_mapping": dict(control_mapping),
         "readiness": public.readiness,
-        "label_validity": "ok" if scoring_track != "diagnostic" else "diagnostic",
+        "label_validity": eligibility["label_validity"],
         "protocol_implementation": "implemented",
     }
     private_spec = validate_private_payload(private_payload)

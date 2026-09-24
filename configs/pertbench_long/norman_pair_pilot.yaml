@@ -1,0 +1,24 @@
+dataset: norman2019
+adapter: norman
+protocol: genetic_pair_acquisition_v1
+data_root: ${PERTBENCH_DATA_ROOT}
+data_dir: ${PERTBENCH_DATA_ROOT}/prepared/norman2019/v1
+source_manifest: ${PERTBENCH_DATA_ROOT}/prepared/norman2019/v1/provenance.json
+matrix:
+  file: matrix.h5ad
+  layer: counts
+  matrix_kind: counts
+  require_verified_provenance: true
+episode_id: norman_pair_pilot_0001
+partition: pilot
+split_variant: pair_holdout_seen_genes
+experimental_budget: 8
+min_candidates: 24
+min_targets: 8
+n_panel: 256
+seed: 1701
+reference_policy: matched_vehicle_v1
+resource_profile: long_cpu_v1
+requested_track: pilot
+data_release_id: local_unreleased
+output: ${PERTBENCH_DATA_ROOT}/episodes

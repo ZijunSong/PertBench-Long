@@ -238,6 +238,13 @@ class ExperimentRecord:
             return (self.perturbation_id,)
         return ()
 
+    def source_identity(self) -> tuple[str, ...] | None:
+        """Stable source cell/sample identity. Does not include row-number suffixes."""
+        if self.original_obs_id:
+            source = str(self.source_file).replace("\\", "/").rsplit("/", 1)[-1] if self.source_file else ""
+            return (self.study, str(self.original_obs_id), source)
+        return None
+
 
 @dataclass
 class PublicEpisodeSpec:

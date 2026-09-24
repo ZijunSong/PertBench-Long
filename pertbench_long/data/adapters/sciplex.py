@@ -9,9 +9,10 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from pertbench_long.data.adapter import CanonicalStore, ImportSummary
+from pertbench_long.data.adapter import CanonicalStore, ImportSummary, load_matrix_sparse
 from pertbench_long.data.adapters.base import load_acquisition_manifest, require_files, resolve_source_dir
 from pertbench_long.data.columns import DEFAULT_ALIASES, resolve_column
+from pertbench_long.data.parsing import looks_like_control_name, parse_bool, require_dose_pair, require_matrix_kind, require_time_pair
 from pertbench_long.errors import SchemaError
 from pertbench_long.hashes import gene_order_hash
 from pertbench_long.schemas.conditions import (
@@ -47,30 +48,34 @@ def import_sciplex(
     study: str = "sciplex3",
     species: str = "human",
     assay: str = "scrna",
-    declared_matrix_kind: str = "counts",
+    declared_matrix_kind: str | None = None,
     matrix_filename: str = "matrix.h5ad",
+    matrix_layer: str | None = None,
     require_exact_dose: bool = True,
 ) -> CanonicalStore:
     root = resolve_source_dir(data_dir, dataset_id="sciplex3")
     field_map = dict(DEFAULT_FIELD_MAP)
     required = (matrix_filename,)
+    hashes = None
     if manifest_path is not None:
         spec = load_acquisition_manifest(manifest_path)
         field_map.update(spec.field_map)
         if spec.required_files:
             required = spec.required_files
-    files = require_files(root, required)
+        hashes = getattr(spec, "file_hashes", None)
+    files = require_files(root, required, hashes=hashes)
     matrix_path = files.get(matrix_filename) or next(iter(files.values()))
     return _import_h5ad_conditions(
         matrix_path,
         study=study,
         species=species,
         assay=assay,
-        declared_matrix_kind=declared_matrix_kind,
+        declared_matrix_kind=require_matrix_kind(declared_matrix_kind),
         field_map=field_map,
         perturbation_kind_default=PERTURBATION_CHEMICAL,
         context_type=CONTEXT_CELL_LINE,
         require_exact_dose=require_exact_dose,
+        matrix_layer=matrix_layer,
         source_notes=["sciplex3 adapter; third-party h5ad is not labeled raw counts unless declared"],
     )
 
@@ -87,10 +92,11 @@ def _import_h5ad_conditions(
     context_type: str,
     require_exact_dose: bool,
     source_notes: list[str],
+    matrix_layer: str | None = None,
 ) -> CanonicalStore:
-    from pertbench_long.data.adapter import load_matrix_sparse
-
-    matrix, obs_ids, genes, obs = load_matrix_sparse(path)
+    matrix, obs_ids, genes, obs = load_matrix_sparse(path, layer=matrix_layer)
+    if obs is None:
+        raise SchemaError(f"{path.name} has no observation metadata")
     if len(genes) != len(set(genes)):
         raise SchemaError(f"duplicate gene IDs in {path.name}; they are not silently dropped")
     if matrix.shape[0] != len(obs_ids) or matrix.shape[1] != len(genes):
@@ -129,34 +135,28 @@ def _import_h5ad_conditions(
         cell_type = str(row[ct_col])
         context_id = str(row[ctx_col]) if ctx_col else cell_type
         perturbation = str(row[pert_col])
-        is_control = False
-        if ctrl_col is not None:
-            is_control = bool(row[ctrl_col])
-        else:
-            is_control = perturbation.lower() in {"control", "vehicle", "dmso", "untreated", "ntc"}
+        flag = parse_bool(row[ctrl_col], field="is_control") if ctrl_col is not None else None
+        is_control = bool(flag) if flag is not None else looks_like_control_name(perturbation)
         kind = PERTURBATION_CONTROL if is_control else perturbation_kind_default
         if not is_control and perturbation_kind_default in {PERTURBATION_GENETIC_SINGLE, "genetic_pair"}:
             kind = infer_genetic_kind(perturbation)
-        dose = row[dose_col] if dose_col else None
-        if dose is not None and (pd.isna(dose) or str(dose).strip() == ""):
-            dose = None
+        raw_dose = row[dose_col] if dose_col else None
         raw_dose_unit = row[dose_unit_col] if dose_unit_col else None
-        if raw_dose_unit is not None and (pd.isna(raw_dose_unit) or str(raw_dose_unit).strip() == ""):
-            raw_dose_unit = None
-        dose_unit = str(raw_dose_unit) if raw_dose_unit is not None else ("none" if dose is None else "nM")
-        time = row[time_col] if time_col else None
-        if time is not None and (pd.isna(time) or str(time).strip() == ""):
-            time = None
+        raw_time = row[time_col] if time_col else None
         raw_time_unit = row[time_unit_col] if time_unit_col else None
-        if raw_time_unit is not None and (pd.isna(raw_time_unit) or str(raw_time_unit).strip() == ""):
-            raw_time_unit = None
-        time_unit = str(raw_time_unit) if raw_time_unit is not None else ("none" if time is None else "h")
+        if kind != PERTURBATION_CONTROL and require_exact_dose:
+            dose, dose_unit = require_dose_pair(raw_dose, raw_dose_unit, require_exact=True)
+        elif kind == PERTURBATION_CONTROL:
+            dose, dose_unit = None, "none"
+        else:
+            dose, dose_unit = require_dose_pair(raw_dose, raw_dose_unit, require_exact=False) if raw_dose is not None and str(raw_dose).strip() != "" else (None, "none")
+        time, time_unit = require_time_pair(raw_time, raw_time_unit)
         sample_id = None if not sample_col or pd.isna(row[sample_col]) else str(row[sample_col])
         replicate_id = None if not rep_col or pd.isna(row[rep_col]) else str(row[rep_col])
         batch_id = None if not batch_col or pd.isna(row[batch_col]) else str(row[batch_col])
         donor = None if not donor_col or pd.isna(row[donor_col]) else str(row[donor_col])
         if kind == PERTURBATION_CONTROL:
-            components = ("control",)
+            components = (perturbation,) if perturbation else ("control",)
         elif kind in {PERTURBATION_GENETIC_SINGLE, "genetic_pair"}:
             from pertbench_long.schemas.conditions import normalize_components
 
@@ -180,7 +180,7 @@ def _import_h5ad_conditions(
             study=study,
             species=species,
             cell_type=cell_type,
-            perturbation_id="Control" if kind == PERTURBATION_CONTROL else perturbation,
+            perturbation_id=perturbation,
             dose=None if dose is None else float(dose),
             dose_unit=dose_unit if dose is not None else "none",
             time=None if time is None else float(time),

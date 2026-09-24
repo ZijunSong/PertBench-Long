@@ -27,7 +27,15 @@ pertbench-long build-episodes --fixture synthetic_dose --output /tmp/pb_long
 pertbench-long build-episodes --fixture synthetic_pair --output /tmp/pb_long
 ```
 
-真实源数据构建需要显式 `--data-dir`（或 YAML `data_dir`），不会回退到 `/data/ppnm`。MOA / temporal 正式 profile 仍为 blocked。旧 PBMC `effect_proxy_v1` 分数定义未改。
+真实源数据必须走 `fetch-data` → `prepare-data` → `doctor-data` → `build-episodes`（YAML `dataset`/`adapter`/`protocol`，无需把真实数据叫 fixture）。缺少源文件或未准备时非零退出，**不会**退回合成数据。当前 GEO 文件 URL/hash 未锁定：`fetch-data` 会列出必须离线放入 `raw/<dataset>/<release>/` 的作者格式文件（sci-Plex: `cells.csv`+`counts.csv`；Norman: `cell_identities.csv`+`counts.csv`），不要把二次处理 h5ad 当成 raw counts。MOA / temporal 正式 profile 仍为 blocked。旧 PBMC `effect_proxy_v1` 分数定义未改。
+
+```bash
+export PERTBENCH_DATA_ROOT=/absolute/path/to/pertbench_data
+pertbench-long fetch-data --dataset sciplex3 --data-root "$PERTBENCH_DATA_ROOT"
+pertbench-long prepare-data --dataset sciplex3 --data-root "$PERTBENCH_DATA_ROOT"
+pertbench-long doctor-data --config configs/pertbench_long/sciplex_dose_pilot.yaml
+pertbench-long build-episodes --config configs/pertbench_long/sciplex_dose_pilot.yaml
+```
 
 ## 模型测评（配置存在 ≠ live 完成）
 
@@ -101,6 +109,7 @@ HTTP 401/403/连接失败记为 `infra_error`，科学分为 null，不进模型
 ## 文档
 
 - [review_fix_status.md](docs/pertbench_long/review_fix_status.md) — A01–A20、B01–B11 与 C01–C05 逐条状态
+- [task_card_chemical_dose.md](docs/pertbench_long/task_card_chemical_dose.md) / [task_card_genetic_pair.md](docs/pertbench_long/task_card_genetic_pair.md) / [task_card_context_campaign.md](docs/pertbench_long/task_card_context_campaign.md)
 - [implementation_status.md](docs/pertbench_long/implementation_status.md)
 - [dataset_card_pbmc.md](docs/pertbench_long/dataset_card_pbmc.md)
 - [known_limitations.md](docs/pertbench_long/known_limitations.md)

@@ -9,7 +9,13 @@ import pandas as pd
 
 from pertbench_long.evaluation.scoring import make_prediction_frame
 from pertbench_long.runtime.broker import Broker
-from pertbench_long.tools.helpers import control_similarity, evidence_paths_from_spec, mean_delta_from_effects, visible_effect_table
+from pertbench_long.tools.helpers import (
+    control_similarity,
+    evidence_paths_from_spec,
+    load_public_control_mapping,
+    mean_delta_from_effects,
+    visible_effect_table,
+)
 
 
 def _gene_ids(broker: Broker) -> list[str]:
@@ -50,8 +56,7 @@ def _visible_paths(broker: Broker) -> tuple[list[Path], Path]:
 
 
 def _control_mapping(broker: Broker) -> dict[str, str] | None:
-    mapping = getattr(broker.oracle.spec, "control_mapping", None)
-    return dict(mapping) if mapping else None
+    return load_public_control_mapping(broker.public_root)
 
 
 def estimate(broker: Broker, sigma: float = 0.15):
@@ -145,16 +150,149 @@ def pbmc_baselines() -> dict[str, Any]:
     return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "random_query", "fixed_order_query", "control_similarity_query")}
 
 
+def _target_meta(broker: Broker):
+    return list(broker.public_spec.targets)
+
+
+def nearest_dose_no_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
+    import numpy as np
+
+    evidence, control = _visible_paths(broker)
+    table = visible_effect_table(evidence, control, _gene_ids(broker), control_mapping=_control_mapping(broker))
+    genes = _gene_ids(broker)
+    effects = []
+    for target in _target_meta(broker):
+        same = table[table["perturbation"].astype(str) == str(target.perturbation)] if not table.empty and "perturbation" in table.columns else table.iloc[0:0]
+        if same.empty:
+            gene_mean = table.groupby("gene_id")["effect"].mean() if not table.empty else {}
+            effects.extend(float(gene_mean.get(g, 0.0)) if hasattr(gene_mean, "get") else 0.0 for g in genes)
+            continue
+        if "dose" in same.columns and target.dose is not None:
+            same = same.copy()
+            same["_dist"] = (same["dose"].astype(float) - float(target.dose)).abs()
+            best_cid = same.sort_values("_dist").iloc[0]["condition_id"]
+            block = same[same["condition_id"] == best_cid]
+        else:
+            block = same
+        gene_mean = block.groupby("gene_id")["effect"].mean()
+        effects.extend(float(gene_mean.get(g, 0.0)) for g in genes)
+    effects = np.asarray(effects, dtype=np.float64)
+    from pertbench_long.baselines.mapping import effects_to_probabilities
+
+    p, c = _write_pred(broker, effects, effects_to_probabilities(effects, sigma=sigma))
+    broker.save_snapshot(p, c)
+    broker.submit(p, c, stop_reason="no_query")
+
+
+def log_dose_linear_no_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
+    import numpy as np
+
+    evidence, control = _visible_paths(broker)
+    table = visible_effect_table(evidence, control, _gene_ids(broker), control_mapping=_control_mapping(broker))
+    genes = _gene_ids(broker)
+    effects = []
+    for target in _target_meta(broker):
+        same = table[table["perturbation"].astype(str) == str(target.perturbation)] if not table.empty and "perturbation" in table.columns else table.iloc[0:0]
+        if same.empty or target.dose in {None, 0}:
+            gene_mean = table.groupby("gene_id")["effect"].mean() if not table.empty else {}
+            effects.extend(float(gene_mean.get(g, 0.0)) if hasattr(gene_mean, "get") else 0.0 for g in genes)
+            continue
+        by_dose = same.groupby(["dose", "gene_id"])["effect"].mean().unstack("gene_id")
+        xs = np.log10(np.clip(np.asarray(by_dose.index, dtype=np.float64), 1e-12, None))
+        x_t = float(np.log10(max(float(target.dose), 1e-12)))
+        pred = []
+        for gene in genes:
+            if gene not in by_dose.columns or len(xs) < 2:
+                pred.append(0.0)
+                continue
+            ys = by_dose[gene].to_numpy(dtype=np.float64)
+            slope, intercept = np.polyfit(xs, ys, 1)
+            pred.append(float(slope * x_t + intercept))
+        effects.extend(pred)
+    effects = np.asarray(effects, dtype=np.float64)
+    from pertbench_long.baselines.mapping import effects_to_probabilities
+
+    p, c = _write_pred(broker, effects, effects_to_probabilities(effects, sigma=sigma))
+    broker.save_snapshot(p, c)
+    broker.submit(p, c, stop_reason="no_query")
+
+
+def single_gene_additivity_no_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
+    import numpy as np
+
+    evidence, control = _visible_paths(broker)
+    table = visible_effect_table(evidence, control, _gene_ids(broker), control_mapping=_control_mapping(broker))
+    genes = _gene_ids(broker)
+    effects = []
+    for target in _target_meta(broker):
+        comps = list(target.perturbation_components or [])
+        if len(comps) != 2 or table.empty:
+            gene_mean = table.groupby("gene_id")["effect"].mean() if not table.empty else {}
+            effects.extend(float(gene_mean.get(g, 0.0)) if hasattr(gene_mean, "get") else 0.0 for g in genes)
+            continue
+        parts = []
+        for gene_name in comps:
+            block = table[table["perturbation"].astype(str) == str(gene_name)] if "perturbation" in table.columns else table.iloc[0:0]
+            if block.empty:
+                parts = []
+                break
+            parts.append(block.groupby("gene_id")["effect"].mean())
+        if len(parts) != 2:
+            gene_mean = table.groupby("gene_id")["effect"].mean()
+            effects.extend(float(gene_mean.get(g, 0.0)) for g in genes)
+        else:
+            effects.extend(float(parts[0].get(g, 0.0) + parts[1].get(g, 0.0)) for g in genes)
+    effects = np.asarray(effects, dtype=np.float64)
+    from pertbench_long.baselines.mapping import effects_to_probabilities
+
+    p, c = _write_pred(broker, effects, effects_to_probabilities(effects, sigma=sigma))
+    broker.save_snapshot(p, c)
+    broker.submit(p, c, stop_reason="no_query")
+
+
+def context_transfer_no_query(broker: Broker, sigma: float = 0.15, **_kwargs) -> None:
+    import numpy as np
+
+    evidence, control = _visible_paths(broker)
+    table = visible_effect_table(evidence, control, _gene_ids(broker), control_mapping=_control_mapping(broker))
+    genes = _gene_ids(broker)
+    effects = []
+    for target in _target_meta(broker):
+        same = table[table["perturbation"].astype(str) == str(target.perturbation)] if not table.empty and "perturbation" in table.columns else table.iloc[0:0]
+        if same.empty:
+            gene_mean = table.groupby("gene_id")["effect"].mean() if not table.empty else {}
+            effects.extend(float(gene_mean.get(g, 0.0)) if hasattr(gene_mean, "get") else 0.0 for g in genes)
+        else:
+            gene_mean = same.groupby("gene_id")["effect"].mean()
+            effects.extend(float(gene_mean.get(g, 0.0)) for g in genes)
+    effects = np.asarray(effects, dtype=np.float64)
+    from pertbench_long.baselines.mapping import effects_to_probabilities
+
+    p, c = _write_pred(broker, effects, effects_to_probabilities(effects, sigma=sigma))
+    broker.save_snapshot(p, c)
+    broker.submit(p, c, stop_reason="no_query")
+
+
+BASELINE_REGISTRY.update(
+    {
+        "nearest_dose_no_query": nearest_dose_no_query,
+        "log_dose_linear_no_query": log_dose_linear_no_query,
+        "single_gene_additivity_no_query": single_gene_additivity_no_query,
+        "context_transfer_no_query": context_transfer_no_query,
+    }
+)
+
+
 def chemical_dose_baselines() -> dict[str, Any]:
-    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "random_query", "fixed_order_query")}
+    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "nearest_dose_no_query", "log_dose_linear_no_query", "random_query", "fixed_order_query")}
 
 
 def genetic_pair_baselines() -> dict[str, Any]:
-    return chemical_dose_baselines()
+    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "single_gene_additivity_no_query", "random_query", "fixed_order_query")}
 
 
 def context_campaign_baselines() -> dict[str, Any]:
-    return chemical_dose_baselines()
+    return {k: BASELINE_REGISTRY[k] for k in ("no_change", "mean_delta_no_query", "context_transfer_no_query", "random_query", "fixed_order_query")}
 
 
 def run_baseline(name: str, broker: Broker, **kwargs: Any) -> None:

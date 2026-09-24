@@ -7,7 +7,14 @@ from typing import Sequence
 
 import numpy as np
 
-from pertbench_long.data.sparse_ops import extract_dense_block, is_sparse, library_sizes as sparse_library_sizes
+from pertbench_long.data.sparse_ops import (
+    extract_dense_block,
+    finite_check_sample,
+    is_sparse,
+    library_sizes as sparse_library_sizes,
+    refuse_full_densify,
+    scale_and_log1p_counts,
+)
 from pertbench_long.errors import UnsupportedProfile
 from pertbench_long.hashes import gene_order_hash, sha256_bytes
 
@@ -42,25 +49,17 @@ def library_sizes(matrix) -> np.ndarray:
     return sparse_library_sizes(matrix)
 
 
-def normalize_counts_then_log1p(matrix, *, full_universe) -> np.ndarray:
-    """Normalize using the full assay gene universe, then log1p. Output G is a column subset later."""
+def normalize_counts_then_log1p(matrix, *, full_universe):
+    """Normalize using the full assay gene universe, then log1p. Keeps sparse inputs sparse."""
     data = matrix if is_sparse(matrix) else np.asarray(matrix, dtype=np.float64)
     universe = full_universe if full_universe is not None else data
-    totals = library_sizes(universe).reshape(-1, 1)
-    if np.any(totals <= 0):
-        raise UnsupportedProfile("zero library size is rejected; it is not silently replaced")
-    if is_sparse(data) or is_sparse(universe):
-        dense = extract_dense_block(data, range(int(data.shape[0])))
-        if not np.all(np.isfinite(dense)) or np.any(dense < 0):
-            raise UnsupportedProfile("counts matrix contains NaN/Inf or negative values")
-        return np.log1p(dense * (COUNTS_NORM_TARGET / totals))
-    data_d = np.asarray(data, dtype=np.float64)
-    universe_d = np.asarray(universe, dtype=np.float64)
-    if not np.all(np.isfinite(data_d)) or not np.all(np.isfinite(universe_d)):
-        raise UnsupportedProfile("counts matrix contains NaN/Inf")
-    if np.any(data_d < 0) or np.any(universe_d < 0):
-        raise UnsupportedProfile("counts matrix contains negative values")
-    return np.log1p(data_d * (COUNTS_NORM_TARGET / totals))
+    if is_sparse(data):
+        refuse_full_densify(data)
+    totals = library_sizes(universe)
+    try:
+        return scale_and_log1p_counts(data, totals, target=COUNTS_NORM_TARGET)
+    except ValueError as exc:
+        raise UnsupportedProfile(str(exc)) from exc
 
 
 def to_effect_space(matrix, matrix_kind: str, *, full_universe=None):
@@ -68,12 +67,25 @@ def to_effect_space(matrix, matrix_kind: str, *, full_universe=None):
     if matrix_kind == "counts":
         universe = full_universe if full_universe is not None else matrix
         return normalize_counts_then_log1p(matrix, full_universe=universe)
-    data = extract_dense_block(matrix, range(int(matrix.shape[0]))) if is_sparse(matrix) else np.asarray(matrix, dtype=np.float64)
-    if not np.all(np.isfinite(data)):
-        raise UnsupportedProfile("matrix contains NaN/Inf")
+    if is_sparse(matrix):
+        refuse_full_densify(matrix)
+        finite_check_sample(matrix)
+        data = matrix
+    else:
+        data = np.asarray(matrix, dtype=np.float64)
+        if not np.all(np.isfinite(data)):
+            raise UnsupportedProfile("matrix contains NaN/Inf")
     if matrix_kind == "log1p":
         return data
     if matrix_kind == "normalized":
+        if is_sparse(data):
+            csr = data
+            if hasattr(csr, "data") and np.any(np.asarray(csr.data) < 0):
+                raise UnsupportedProfile("normalized matrix contains negative values")
+            csr = csr.astype(np.float64).copy() if hasattr(csr, "astype") else csr
+            if hasattr(csr, "data"):
+                csr.data = np.log1p(np.asarray(csr.data, dtype=np.float64))
+            return csr
         if np.any(data < 0):
             raise UnsupportedProfile("normalized matrix contains negative values")
         return np.log1p(data)

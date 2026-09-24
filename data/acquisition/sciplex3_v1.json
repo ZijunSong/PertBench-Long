@@ -4,6 +4,31 @@
   "release_id": "sciplex3_v1",
   "license": "user_must_confirm_source_license",
   "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "author_entry": "https://github.com/cole-trapnell-lab/sci-plex",
+  "raw_sources": [
+    {
+      "name": "cells.csv",
+      "role": "cell_metadata",
+      "accession": "GSM4150378",
+      "author_entry": "https://github.com/cole-trapnell-lab/sci-plex",
+      "url": null,
+      "sha256": null,
+      "format": "csv",
+      "status": "user_must_obtain",
+      "note": "GEO file names/URLs were not locked in this revision. Place author cell/sample/drug/dose/time/vehicle annotations here."
+    },
+    {
+      "name": "counts.csv",
+      "role": "expression_counts",
+      "accession": "GSM4150378",
+      "author_entry": "https://github.com/cole-trapnell-lab/sci-plex",
+      "url": null,
+      "sha256": null,
+      "format": "csv",
+      "status": "user_must_obtain",
+      "note": "Author primary processing counts (cells x genes). Do not substitute an HVG-scaled third-party h5ad."
+    }
+  ],
   "required_files": ["matrix.h5ad"],
   "field_map": {
     "cell_type": "cell_type",
@@ -20,11 +45,13 @@
   },
   "software": {
     "adapter": "pertbench_long.data.adapters.sciplex.import_sciplex",
+    "prepare": "pertbench_long.data.prepare.sciplex.prepare_sciplex",
     "identity_version": "cid_v1"
   },
   "notes": [
-    "Do not treat a third-party processed h5ad as raw counts unless matrix_kind is declared.",
-    "Dose units must come from metadata, not from paper OCR.",
+    "fetch-data reports files the user must obtain; it does not guess wget URLs.",
+    "prepare-data reads author-format cells.csv + counts.csv|counts.h5ad and writes prepared/sciplex3/v1.",
+    "A third-party processed h5ad is not labeled raw counts unless matrix_kind and layer are declared.",
     "Input is an explicit data directory; /data/ppnm is never implied."
   ]
 }

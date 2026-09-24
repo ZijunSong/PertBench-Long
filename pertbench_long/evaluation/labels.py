@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -32,12 +32,42 @@ def direction_from_delta(delta: np.ndarray, tau: float = TAU_DEFAULT) -> np.ndar
     return out
 
 
+def _paired_groups(stim_groups: Sequence[str], control_groups: Sequence[str]) -> list[str]:
+    return sorted(set(stim_groups) & set(control_groups) - {None, "None", ""})
+
+
+def _group_equal_delta(
+    stim: np.ndarray,
+    control: np.ndarray,
+    stim_groups: Sequence[str],
+    control_groups: Sequence[str],
+    *,
+    label: str,
+) -> tuple[np.ndarray, str]:
+    groups = _paired_groups(stim_groups, control_groups)
+    if not groups:
+        raise LabelBuildError(f"{label} metadata present but no paired groups across stim/control")
+    deltas = []
+    for group in groups:
+        s = stim[np.array(stim_groups) == group]
+        c = control[np.array(control_groups) == group]
+        if s.size == 0 or c.size == 0:
+            continue
+        deltas.append(s.mean(axis=0) - c.mean(axis=0))
+    if not deltas:
+        raise LabelBuildError(f"no {label} with both stim and control cells")
+    return np.mean(np.stack(deltas, axis=0), axis=0), f"{label}_equal_weight"
+
+
 def mean_effect(
     stim: np.ndarray,
     control: np.ndarray,
     *,
     donor_stim: Optional[Sequence[str]] = None,
     donor_control: Optional[Sequence[str]] = None,
+    group_stim: Optional[Sequence[str]] = None,
+    group_control: Optional[Sequence[str]] = None,
+    estimand: str = "auto",
 ) -> tuple[np.ndarray, str]:
     stim = _require_finite(stim, "stim matrix")
     control = _require_finite(control, "control matrix")
@@ -45,24 +75,22 @@ def mean_effect(
         raise LabelBuildError("stim and control matrices must be non-empty")
     if stim.shape[1] != control.shape[1]:
         raise LabelBuildError("stim and control gene dimensions do not match")
-    if (
-        donor_stim is not None
-        and donor_control is not None
-        and any(d is not None for d in list(donor_stim) + list(donor_control))
-    ):
-        donors = sorted(set(donor_stim) & set(donor_control) - {None, "None", ""})
-        if not donors:
-            raise LabelBuildError("donor metadata present but no paired donors across stim/control")
-        deltas = []
-        for donor in donors:
-            s = stim[np.array(donor_stim) == donor]
-            c = control[np.array(donor_control) == donor]
-            if s.size == 0 or c.size == 0:
-                continue
-            deltas.append(s.mean(axis=0) - c.mean(axis=0))
-        if not deltas:
-            raise LabelBuildError("no donor with both stim and control cells")
-        return np.mean(np.stack(deltas, axis=0), axis=0), "donor_equal_weight"
+    has_groups = group_stim is not None and group_control is not None and any(
+        g not in {None, "None", ""} for g in list(group_stim) + list(group_control)
+    )
+    has_donors = donor_stim is not None and donor_control is not None and any(
+        d is not None for d in list(donor_stim) + list(donor_control)
+    )
+    if estimand == "cell_weighted_descriptive":
+        return stim.mean(axis=0) - control.mean(axis=0), "cell_weighted_descriptive"
+    if estimand == "replicate_equal_weight" or (estimand == "auto" and has_groups):
+        if not has_groups:
+            raise LabelBuildError("replicate_equal_weight refused: replicate_id metadata is missing")
+        return _group_equal_delta(stim, control, group_stim, group_control, label="replicate")
+    if estimand == "donor_equal_weight" or (estimand == "auto" and has_donors):
+        if not has_donors:
+            raise LabelBuildError("donor metadata present but incomplete")
+        return _group_equal_delta(stim, control, donor_stim, donor_control, label="donor")
     return stim.mean(axis=0) - control.mean(axis=0), "cell_weighted"
 
 
@@ -136,6 +164,8 @@ def build_lognorm_cellmean_delta_labels(
     gene_ids: Sequence[str],
     targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
     donors: Mapping[str, tuple[Optional[Sequence[str]], Optional[Sequence[str]]]] | None = None,
+    replicates: Mapping[str, tuple[Optional[Sequence[str]], Optional[Sequence[str]]]] | None = None,
+    estimand: str = "auto",
     interaction_partners: Mapping[str, tuple[np.ndarray | None, np.ndarray | None]] | None = None,
 ) -> LabelTable:
     """Continuous treated-minus-matched-control cell-mean delta on an already-transformed matrix.
@@ -149,14 +179,39 @@ def build_lognorm_cellmean_delta_labels(
         "delta is mean(z_treated)-mean(z_matched_control) after lognorm_cellmean_delta_v1",
         "this is not log2 fold-change and not a significance call",
     ]
-    aggregation = "cell_weighted"
+    aggregations: dict[str, str] = {}
+    coverage: dict[str, dict[str, Any]] = {}
     for target_id, (stim, control) in targets.items():
         donor_pair = (donors or {}).get(target_id)
         donor_stim = donor_pair[0] if donor_pair else None
         donor_ctrl = donor_pair[1] if donor_pair else None
-        if donor_stim is None or not any(d not in {None, "None", ""} for d in (donor_stim or [])):
+        rep_pair = (replicates or {}).get(target_id)
+        group_stim = rep_pair[0] if rep_pair else None
+        group_ctrl = rep_pair[1] if rep_pair else None
+        if group_stim is None or not any(g not in {None, "None", ""} for g in (group_stim or [])):
             notes.append(f"{target_id}:sample_level_descriptive_effect_cells_are_not_biological_replicates")
-        delta, aggregation = mean_effect(stim, control, donor_stim=donor_stim, donor_control=donor_ctrl)
+        target_estimand = estimand
+        if estimand == "auto" and (group_stim is None or not any(g not in {None, "None", ""} for g in (group_stim or []))):
+            target_estimand = "cell_weighted_descriptive"
+        delta, aggregation = mean_effect(
+            stim,
+            control,
+            donor_stim=donor_stim,
+            donor_control=donor_ctrl,
+            group_stim=group_stim,
+            group_control=group_ctrl,
+            estimand=target_estimand,
+        )
+        aggregations[target_id] = aggregation
+        n_rep = len({g for g in (group_stim or []) if g not in {None, "None", ""}})
+        n_rep_ctrl = len({g for g in (group_ctrl or []) if g not in {None, "None", ""}})
+        coverage[target_id] = {
+            "n_stim_cells": int(np.asarray(stim).shape[0]),
+            "n_control_cells": int(np.asarray(control).shape[0]),
+            "n_stim_replicates": n_rep,
+            "n_control_replicates": n_rep_ctrl,
+            "aggregation": aggregation,
+        }
         residual = None
         residual_reason = None
         partners = (interaction_partners or {}).get(target_id)
@@ -174,6 +229,7 @@ def build_lognorm_cellmean_delta_labels(
                 "gene_id": gene,
                 "reference_effect": float(dlt),
                 "label_name": "lognorm_cellmean_delta",
+                "aggregation": aggregation,
             }
             if residual is None:
                 item["interaction_residual"] = np.nan
@@ -188,12 +244,15 @@ def build_lognorm_cellmean_delta_labels(
     key = frame["target_id"].astype(str) + "\t" + frame["gene_id"].astype(str)
     if key.duplicated().any():
         raise LabelBuildError("duplicate target_id × gene_id labels")
+    unique_agg = sorted(set(aggregations.values()))
+    notes.append("per_target_aggregation=" + ",".join(f"{k}:{v}" for k, v in sorted(aggregations.items())))
+    notes.append("coverage=" + str(coverage))
     return LabelTable(
         frame=frame,
         profile=LABEL_LOGNORM_CELLMEAN_DELTA_V1,
         effect_unit="lognorm_cellmean_delta",
         tau=None,
-        aggregation=aggregation,
+        aggregation=",".join(unique_agg) if unique_agg else "cell_weighted_descriptive",
         notes=notes,
     )
 

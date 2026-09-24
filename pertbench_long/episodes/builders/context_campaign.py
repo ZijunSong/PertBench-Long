@@ -29,6 +29,7 @@ def assign_context_roles(
     min_candidates: int,
     min_targets: int,
     min_cells: int,
+    seed: int = 1701,
 ) -> dict[str, Any]:
     audit = audit_conditions(store, min_cells=min_cells, min_candidates=min_candidates, min_targets=min_targets, protocol=PROTOCOL_CONTEXT_CAMPAIGN)
     controls = match_controls(store)
@@ -40,15 +41,15 @@ def assign_context_roles(
         by_ctx[rec.resolved_context_id()].append(cid)
     if source_context not in by_ctx:
         raise InsufficientEligible(f"insufficient_eligible_conditions: missing source context {source_context}")
-    source_items = list(by_ctx[source_context])
+    source_items = sorted(by_ctx[source_context])
     o_ids = list(source_items[: max(4, len(source_items) // 2)])
     q_ids = [cid for cid in source_items if cid not in o_ids]
     t_ids: list[str] = []
     for ctx in target_contexts:
-        items = list(by_ctx.get(ctx) or [])
+        items = sorted(by_ctx.get(ctx) or [])
         if len(items) < 4:
             raise InsufficientEligible(f"insufficient_eligible_conditions: context {ctx} has {len(items)} eligible conditions")
-        o_ids.append(items[0])  # few-shot calibration
+        o_ids.append(items[0])
         t_ids.extend(items[1:7])
         q_ids.extend(items[7:])
     if len(q_ids) < min_candidates or len(t_ids) < min_targets:
@@ -79,7 +80,15 @@ def build_context_campaign_episode(
     data_release_id: str = "local_unreleased",
     min_cells: int = 5,
     a_family: float = 0.5,
-    **kwargs: Any,
+    seed: int = 1701,
+    partition: str | None = None,
+    resource_profile: str = "long_cpu_v1",
+    requested_track: str = "pilot",
+    label_estimand: str = "auto",
+    provenance_verified: bool = False,
+    source_verified: bool = False,
+    scoring_scale_hash: str | None = None,
+    development_episodes: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     targets = list(target_contexts or ["K562", "MCF7"])
     roles = assign_context_roles(
@@ -89,6 +98,7 @@ def build_context_campaign_episode(
         min_candidates=min_candidates,
         min_targets=min_targets,
         min_cells=min_cells,
+        seed=seed,
     )
     return build_episode_from_condition_ids(
         store,
@@ -110,5 +120,14 @@ def build_context_campaign_episode(
         min_targets=min_targets,
         n_panel=n_panel,
         a_family=a_family,
-        notes=["few-shot target-context adaptation; not zero-shot"],
+        notes=["few-shot target-context adaptation; not zero-shot", f"actual_Q={len(roles['Q'])}", f"actual_T={len(roles['T'])}"],
+        partition=partition or ("synthetic" if synthetic else None),
+        requested_track=requested_track,
+        label_estimand=label_estimand,
+        provenance_verified=provenance_verified,
+        source_verified=source_verified,
+        scoring_scale_hash=scoring_scale_hash,
+        development_episodes=development_episodes,
+        seed=seed,
+        resource_profile=resource_profile,
     )

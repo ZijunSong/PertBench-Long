@@ -70,7 +70,9 @@ def test_v05_sparse_library_size_matches_dense():
     assert np.allclose(extract_dense_block(csr, [1], [0, 2]), dense[1:2, [0, 2]])
     z_dense = to_effect_space(dense, "counts", full_universe=dense)
     z_sparse = to_effect_space(csr, "counts", full_universe=csr)
-    assert np.allclose(z_dense, z_sparse)
+    z_sparse_arr = np.asarray(z_sparse.todense() if hasattr(z_sparse, "todense") else z_sparse)
+    z_dense_arr = np.asarray(z_dense.todense() if hasattr(z_dense, "todense") else z_dense)
+    assert np.allclose(z_dense_arr, z_sparse_arr)
 
 
 def test_v10_extrapolation_rejects_higher_visible_dose():

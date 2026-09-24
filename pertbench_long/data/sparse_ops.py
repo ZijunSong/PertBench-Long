@@ -73,3 +73,32 @@ def finite_check_sample(matrix: Any, *, max_check: int = 10000) -> None:
     sample = extract_dense_block(matrix, range(rows))
     if not np.all(np.isfinite(sample)):
         raise ValueError("matrix sample contains NaN/Inf")
+
+
+def refuse_full_densify(matrix: Any, *, max_values: int = 2_000_000) -> None:
+    """Sentinel: a full-matrix toarray() of a large sparse object is an error."""
+    if is_sparse(matrix) and int(n_rows(matrix) * n_cols(matrix)) > max_values:
+        raise MemoryError(
+            f"refusing full densify of sparse matrix shape={tuple(matrix.shape)} "
+            f"({int(n_rows(matrix) * n_cols(matrix))} values)"
+        )
+
+
+def scale_and_log1p_counts(matrix: Any, totals: np.ndarray, *, target: float = 10000.0):
+    """Library-size scale + log1p without materializing a full dense copy."""
+    if np.any(totals <= 0):
+        raise ValueError("zero library size is rejected; it is not silently replaced")
+    scale = np.asarray(target / totals, dtype=np.float64)
+    if is_sparse(matrix):
+        refuse_full_densify(matrix)
+        csr = as_csr(matrix).astype(np.float64)
+        if csr.data.size:
+            if not np.all(np.isfinite(csr.data)) or np.any(csr.data < 0):
+                raise ValueError("counts matrix contains NaN/Inf or negative values")
+        scaled = csr.multiply(scale.reshape(-1, 1)).tocsr()
+        scaled.data = np.log1p(np.asarray(scaled.data, dtype=np.float64))
+        return scaled
+    data = np.asarray(matrix, dtype=np.float64)
+    if not np.all(np.isfinite(data)) or np.any(data < 0):
+        raise ValueError("counts matrix contains NaN/Inf or negative values")
+    return np.log1p(data * scale.reshape(-1, 1))
