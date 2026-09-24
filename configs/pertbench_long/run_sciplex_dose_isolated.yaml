@@ -1,0 +1,29 @@
+config_version: "1.0"
+mode: isolated_eval
+agent: llm_adaptive_query
+public_dir: ${PERTBENCH_DATA_ROOT}/episodes/sciplex_dose_pilot_0001/public
+private_manifest: ${PERTBENCH_DATA_ROOT}/episodes/sciplex_dose_pilot_0001/private/manifest.json
+output: runs/eval/sciplex_dose_isolated
+note: "Isolated T1 template. isolation_qualified stays false until scripts/isolation_acceptance.py writes a passing report for this image. Not a completed isolation run."
+model:
+  backend: openai_compatible_chat
+  base_url: http://127.0.0.1:8000/v1
+  model: YOUR_SERVED_MODEL_NAME
+  auth_mode: none
+  action_format: native_tools
+  temperature: 0.0
+  request_timeout_s: 120
+runtime:
+  sandbox: docker
+  analysis_image: YOUR_ANALYSIS_IMAGE
+  isolation_acceptance_report: ${PERTBENCH_DATA_ROOT}/isolation_acceptance.json
+  isolation_attestation:
+    digest: REPLACE_WITH_IMAGE_DIGEST
+  episode_timeout_s: 1800
+  tool_timeout_s: 60
+  cpu: 2
+  memory_gib: 8
+evaluation:
+  experimental_budget_cap: 8
+  seed: 1701
+  allow_unqualified: false

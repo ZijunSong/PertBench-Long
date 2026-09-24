@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
 from typing import Any, Mapping
 
 from pertbench_long.errors import ConfigError
+
+_ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+PATH_FIELDS = ("public_dir", "private_manifest", "output")
 
 
 def first_defined(*values: Any, default: Any = None) -> Any:
@@ -19,11 +25,32 @@ def _as_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def expand_config_string(value: str) -> str:
+    """Expand ~ and ${VAR} in paths. Does not read or store API key values."""
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in os.environ:
+            raise ConfigError(f"unresolved environment variable ${{{name}}}")
+        return os.environ[name]
+
+    return os.path.expanduser(_ENV_VAR.sub(_replace, value))
+
+
+def resolve_config_path(raw: str, *, config_path: Path | None) -> str:
+    text = expand_config_string(str(raw))
+    path = Path(text)
+    if not path.is_absolute() and config_path is not None:
+        path = (Path(config_path).resolve().parent / path).resolve()
+    return str(path)
+
+
 def resolve_run_config(
     *,
     cli: Mapping[str, Any] | None = None,
     yaml_cfg: Mapping[str, Any] | None = None,
     documented: Mapping[str, Any] | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build the config object that run/resume/suite must actually consume."""
     cli = _as_mapping(cli)
@@ -61,6 +88,12 @@ def resolve_run_config(
         raise ConfigError("mode is required (explicit CLI or YAML)")
     if resolved["public_dir"] is None or resolved["private_manifest"] is None:
         raise ConfigError("public_dir and private_manifest are required")
+    for field in PATH_FIELDS:
+        if resolved.get(field):
+            resolved[field] = resolve_config_path(str(resolved[field]), config_path=config_path)
+    report = (resolved.get("runtime") or {}).get("isolation_acceptance_report")
+    if report:
+        resolved["runtime"]["isolation_acceptance_report"] = resolve_config_path(str(report), config_path=config_path)
     return resolved
 
 

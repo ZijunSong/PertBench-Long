@@ -133,6 +133,13 @@ class EpisodeRunner:
                     self.public_spec.resource_profile if isinstance(self.public_spec.resource_profile, str) else "cpu_pilot_v1"
                 )
                 attestation = dict(runtime.get("isolation_attestation") or {})
+                report = None
+                report_path = runtime.get("isolation_acceptance_report")
+                if report_path:
+                    report_file = Path(report_path)
+                    if not report_file.is_file():
+                        raise IsolationUnavailable(f"isolation acceptance report is missing: {report_file}")
+                    report = _load_json(report_file)
                 self.executor = make_executor(
                     mode,
                     image=image,
@@ -140,6 +147,7 @@ class EpisodeRunner:
                     cpu=int(first_defined(runtime.get("cpu"), profile.cpu, default=2)),
                     required_digest=attestation.get("digest"),
                     workspace_gib=runtime.get("workspace_gib"),
+                    acceptance_report=report,
                 )
                 self.isolation_backend = self.executor.backend
             except IsolationUnavailable as exc:

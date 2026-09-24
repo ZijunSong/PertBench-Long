@@ -152,7 +152,18 @@ Per-item audit mapping: `docs/pertbench_long/review_fix_status.md`.
 | M11 required jobs | implemented | `PERTBENCH_REQUIRE_LIVE=1` or `PERTBENCH_REQUIRE_DOCKER=1` fails instead of skipping |
 | M12 official release | blocked | no frozen GEO release; pilot remains the only real-data track |
 
-`python -m pytest tests/pertbench_long -q` after this revision exited 0. Live model and Docker boundary runs remain `not_run` skips, not passes.
+## Startup-condition revision (2026-09-24 review of 5bf28d6)
+
+- Run/suite paths expand `${VAR}` and `~`, and resolve paths relative to the config file. API key values are not copied into the resolved config.
+- Cell Ranger MEX is transposed from features × barcodes to cells × genes before barcode filtering, and the matrix, barcodes, genes, identities, and guides files are hashed.
+- An h5ad without a declared kind is not treated as counts. A counts layer with its own `layer_kinds` entry can be selected when X is scaled.
+- `doctor-data` requires `qc.status=ok`, prepared-manifest hashes, controls, and a matrix/condition size match.
+- Official builds require a `source_lock_v1` record with real files and hashes, a split manifest whose partition matches the build, and a development calibration. `source_lock_status=locked` alone is not enough.
+- `fetch-data` and `prepare-data` accept `--input-profile`. `h5ad_bundle` does not require `counts.csv`.
+- The isolation script runs container checks when Docker and `PERTBENCH_ANALYSIS_IMAGE` are set. Otherwise it stays `blocked`/`not_run`. The executor reads `runtime.isolation_acceptance_report` instead of ignoring a passing report.
+- GEO source lock, a real live episode, and a real Docker acceptance run remain **not_run**.
+
+`python -m pytest tests/pertbench_long -q` after this revision. Live/Docker required jobs stay skipped unless explicitly requested, and then fail closed when the service or image is missing.
 
 ## Not executed / not claimed
 

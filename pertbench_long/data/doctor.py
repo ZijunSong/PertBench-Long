@@ -26,6 +26,8 @@ def doctor_data(
     manifest_path: Path | str | None = None,
     min_candidates: int = 24,
     min_targets: int = 8,
+    min_cells: int = 5,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
         root = resolve_data_root(data_root)
@@ -40,7 +42,7 @@ def doctor_data(
         return {"status": STATUS_MISSING_METADATA, "dataset": dataset, "missing": [str(manifest_path)]}
     ds, release_id, sources, _payload = load_source_files(manifest_path)
     raw = raw_dir(root, ds or dataset, release_id or "v1")
-    prepared = prepared_dir(root, ds or dataset, "v1")
+    prepared = Path(config["data_dir"]) if config and config.get("data_dir") else prepared_dir(root, ds or dataset, "v1")
     report: dict[str, Any] = {
         "dataset": ds or dataset,
         "data_root": str(root),
@@ -81,7 +83,20 @@ def doctor_data(
     except Exception:
         return {**report, "status": "invalid_matrix", "reason": "qc_report_unreadable"}
     if not qc or not qc.get("status") or not qc.get("n_cells"):
-        return {**report, "status": "empty_qc", "reason": "empty_qc"}
+        return {**report, "status": "empty_qc", "reason": "empty_qc", "prepared_valid": False, "episode_buildable": False, "source_released": False}
+    if str(qc.get("status")) != "ok":
+        return {**report, "status": "blocked", "reason": "qc_failed", "prepared_valid": False, "episode_buildable": False, "source_released": False}
+    manifest_path_prepared = prepared / "prepared_manifest.json"
+    if not manifest_path_prepared.exists():
+        return {**report, "status": "blocked", "reason": "missing_prepared_manifest", "prepared_valid": False, "episode_buildable": False, "source_released": False}
+    try:
+        prepared_manifest = json.loads(manifest_path_prepared.read_text(encoding="utf-8"))
+        outputs = dict(prepared_manifest.get("outputs") or {})
+        for name in ("matrix.h5ad", "conditions.parquet", "qc_report.json"):
+            if outputs.get(name) != sha256_file(prepared / name):
+                return {**report, "status": "hash_mismatch", "reason": "hash_mismatch", "file": name, "prepared_valid": False, "episode_buildable": False, "source_released": False}
+    except Exception as exc:
+        return {**report, "status": "blocked", "reason": "invalid_prepared_manifest", "detail": str(exc), "prepared_valid": False, "episode_buildable": False, "source_released": False}
     try:
         import anndata as ad
 
@@ -92,9 +107,15 @@ def doctor_data(
     if n_obs <= 0 or n_vars <= 0:
         return {**report, "status": "invalid_matrix", "reason": "invalid_matrix"}
     cond = pd.read_parquet(prepared / "conditions.parquet")
+    if "n_cells" in cond.columns and int(cond["n_cells"].fillna(0).sum()) != n_obs:
+        return {**report, "status": "blocked", "reason": "condition_matrix_mismatch", "prepared_valid": False, "episode_buildable": False, "source_released": False}
     treated = cond
+    n_controls = 0
     if "perturbation_kind" in cond.columns:
         treated = cond[cond["perturbation_kind"].astype(str) != "control"]
+        n_controls = int((cond["perturbation_kind"].astype(str) == "control").sum())
+        if n_controls <= 0:
+            return {**report, "status": "blocked", "reason": "control_unmatched", "prepared_valid": False, "episode_buildable": False, "source_released": False}
     n = int(treated.shape[0])
     if n <= 0:
         return {**report, "status": "insufficient_conditions", "reason": "insufficient_eligible_conditions", "n_treated": 0}
@@ -108,12 +129,57 @@ def doctor_data(
             }
         )
         return report
+    source_released = bool(isinstance(provenance.get("source_lock"), dict) and provenance.get("source_lock_status") == "locked")
+    episode_buildable = True
+    if config and config.get("protocol"):
+        try:
+            kind = (provenance.get("matrix") or {}).get("matrix_kind")
+            layer = (provenance.get("matrix") or {}).get("layer")
+            if config.get("adapter") == "norman" or dataset == "norman2019":
+                from pertbench_long.data.adapters.norman import import_norman
+
+                store = import_norman(prepared, declared_matrix_kind=kind, matrix_layer=layer if layer not in {None, "X"} else None)
+            else:
+                from pertbench_long.data.adapters.sciplex import import_sciplex
+
+                store = import_sciplex(prepared, declared_matrix_kind=kind, matrix_layer=layer if layer not in {None, "X"} else None)
+            from pertbench_long.data.audit_conditions import audit_conditions
+
+            audit = audit_conditions(
+                store,
+                min_cells=min_cells,
+                min_candidates=min_candidates,
+                min_targets=min_targets,
+                protocol=str(config.get("protocol")),
+            )
+            if audit.get("status") != "ok":
+                return {
+                    **report,
+                    "status": "blocked",
+                    "reason": (audit.get("reasons") or ["insufficient_eligible_conditions"])[0],
+                    "prepared_valid": True,
+                    "episode_buildable": False,
+                    "source_released": source_released,
+                }
+        except Exception as exc:
+            return {
+                **report,
+                "status": "blocked",
+                "reason": "episode_not_buildable",
+                "detail": f"{type(exc).__name__}: {exc}",
+                "prepared_valid": True,
+                "episode_buildable": False,
+                "source_released": source_released,
+            }
     report.update(
         {
             "status": STATUS_READY_PILOT,
             "n_conditions": n,
             "provenance_study": provenance.get("dataset_id"),
             "matrix_kind": provenance.get("matrix", {}).get("matrix_kind"),
+            "prepared_valid": True,
+            "episode_buildable": episode_buildable,
+            "source_released": source_released,
             "note": "ready for a marked pilot build; this is not official scoring eligibility",
         }
     )

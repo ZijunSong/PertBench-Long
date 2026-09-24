@@ -61,6 +61,7 @@ def prepare_sciplex(
     unit_basis: str | None = None,
     input_profile: str | None = None,
     matrix_layer: str | None = None,
+    matrix_kind: str | None = None,
 ) -> dict[str, Any]:
     """Align counts with cell/sample/drug/dose/time/vehicle annotations.
 
@@ -80,7 +81,8 @@ def prepare_sciplex(
     cells[barcode_col] = cells[barcode_col].astype(str)
     if cells[barcode_col].duplicated().any():
         raise SchemaError("duplicate cell barcodes in sci-Plex cells.csv; they are not silently dropped")
-    matrix, obs_ids, genes, matrix_kind = read_expression(counts_path, layer=matrix_layer)
+    declared = "counts" if counts_path.suffix.lower() == ".csv" else matrix_kind
+    matrix, obs_ids, genes, matrix_kind = read_expression(counts_path, layer=matrix_layer, declared_kind=declared)
     if len(genes) != len(set(genes)):
         raise SchemaError("duplicate gene IDs in sci-Plex counts; they are not silently dropped")
     if len(obs_ids) != len(set(obs_ids)):

@@ -109,12 +109,17 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--data-root", default=None)
     fetch.add_argument("--manifest", default=None)
     fetch.add_argument("--offline", action="store_true")
+    fetch.add_argument("--input-profile", default=None)
 
     prepare = sub.add_parser("prepare-data", help="Convert author-format counts+metadata into the standard prepared input")
     prepare.add_argument("--dataset", required=True, choices=["sciplex3", "norman2019"])
     prepare.add_argument("--data-root", default=None)
     prepare.add_argument("--source-dir", default=None)
     prepare.add_argument("--output", default=None)
+    prepare.add_argument("--input-profile", default=None)
+    prepare.add_argument("--matrix-layer", default=None)
+    prepare.add_argument("--matrix-kind", default=None)
+    prepare.add_argument("--require-guide-map", action="store_true")
 
     doctor_data = sub.add_parser("doctor-data", help="Diagnose DATA_ROOT readiness without building episodes")
     doctor_data.add_argument("--config", default=None)
@@ -478,7 +483,14 @@ def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -
             label_profile="lognorm_cellmean_delta_v1",
             split_manifest=split_manifest,
             declared_scale_hash=cfg.get("scoring_scale_hash"),
+            partition=cfg.get("partition"),
+            protocol=protocol,
+            estimand=cfg.get("label_estimand"),
         )
+    elif (matrix_cfg.get("require_verified_provenance")):
+        from pertbench_long.episodes.evidence import verify_prepared_provenance
+
+        verify_prepared_provenance(data_path)
         common["data_release_id"] = cfg.get("data_release_id")
     resolved_path = dest / episode_id / "resolved_build_config.json"
     if protocol == PROTOCOL_CHEMICAL_DOSE:
@@ -521,7 +533,13 @@ def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -
 def _cmd_fetch(args: argparse.Namespace) -> int:
     from pertbench_long.data.acquire import fetch_dataset
 
-    report = fetch_dataset(args.dataset, data_root=args.data_root, manifest_path=args.manifest, offline=bool(args.offline))
+    report = fetch_dataset(
+        args.dataset,
+        data_root=args.data_root,
+        manifest_path=args.manifest,
+        offline=bool(args.offline),
+        input_profile=args.input_profile,
+    )
     print(json.dumps(report.to_dict(), indent=2))
     return EXIT_OK if report.status == "ok" else EXIT_CONFIG
 
@@ -535,11 +553,24 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     if args.dataset == "sciplex3":
         from pertbench_long.data.prepare.sciplex import prepare_sciplex
 
-        result = prepare_sciplex(source, dest)
+        result = prepare_sciplex(
+            source,
+            dest,
+            input_profile=args.input_profile,
+            matrix_layer=args.matrix_layer,
+            matrix_kind=args.matrix_kind,
+        )
     else:
         from pertbench_long.data.prepare.norman import prepare_norman
 
-        result = prepare_norman(source, dest)
+        result = prepare_norman(
+            source,
+            dest,
+            input_profile=args.input_profile,
+            matrix_layer=args.matrix_layer,
+            matrix_kind=args.matrix_kind,
+            require_guide_map=bool(args.require_guide_map),
+        )
     print(json.dumps(result, indent=2, default=str))
     return EXIT_OK
 
@@ -556,6 +587,8 @@ def _cmd_doctor_data(args: argparse.Namespace) -> int:
         data_root=data_root,
         min_candidates=int(cfg.get("min_candidates", 24)),
         min_targets=int(cfg.get("min_targets", 8)),
+        min_cells=int(cfg.get("min_cells", 5)),
+        config=cfg,
     )
     print(json.dumps(report, indent=2, default=str))
     return EXIT_OK if report.get("status") == STATUS_READY_PILOT else EXIT_CONFIG
@@ -646,6 +679,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         },
         yaml_cfg=cfg,
         documented=DOCUMENTED_RUN_DEFAULTS,
+        config_path=Path(args.config) if args.config else None,
     )
     agent = resolved["agent"]
     if agent not in AGENT_REGISTRY:

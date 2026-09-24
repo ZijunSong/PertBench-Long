@@ -33,6 +33,7 @@ def run_suite(config_path: Path) -> dict[str, Any]:
                         run_out = output / str(model.get("name") or model.get("model")) / str(policy) / f"seed{seed}"
                         resolved = resolve_run_config(
                             cli={"seed": seed, "agent": policy, "mode": cfg.get("mode"), "output": str(run_out)},
+                            config_path=Path(config_path),
                             yaml_cfg={
                                 "mode": cfg.get("mode") or "local_trusted_debug",
                                 "public_dir": episode["public_dir"],
@@ -46,8 +47,8 @@ def run_suite(config_path: Path) -> dict[str, Any]:
                             documented={"agent": policy, "output": str(run_out)},
                         )
                         runner = EpisodeRunner(
-                            public_dir=Path(episode["public_dir"]),
-                            private_manifest=Path(episode["private_manifest"]),
+                            public_dir=Path(resolved["public_dir"]),
+                            private_manifest=Path(resolved["private_manifest"]),
                             run_root=run_out,
                             mode=str(resolved["mode"]),
                             agent=str(policy),

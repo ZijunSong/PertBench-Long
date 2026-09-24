@@ -217,11 +217,23 @@ def test_e08_digest_match_is_not_isolation_qualified():
 
 
 def test_live_and_docker_jobs_fail_when_explicitly_required():
-    if os.environ.get("PERTBENCH_REQUIRE_LIVE") == "1":
-        pytest.fail("live model episode is not_run; refusing a green required job")
-    if os.environ.get("PERTBENCH_REQUIRE_DOCKER") == "1":
-        pytest.fail("docker isolation acceptance is not_run; refusing a green required job")
-    pytest.skip("live/docker acceptance is not_run unless PERTBENCH_REQUIRE_LIVE or PERTBENCH_REQUIRE_DOCKER is set")
+    import shutil
+
+    required_live = os.environ.get("PERTBENCH_REQUIRE_LIVE") == "1"
+    required_docker = os.environ.get("PERTBENCH_REQUIRE_DOCKER") == "1"
+    if not required_live and not required_docker:
+        pytest.skip("live/docker acceptance is not requested")
+    if required_docker:
+        if shutil.which("docker") is None or not os.environ.get("PERTBENCH_ANALYSIS_IMAGE"):
+            pytest.fail("blocked: docker acceptance was requested but docker or PERTBENCH_ANALYSIS_IMAGE is missing")
+        from scripts.isolation_acceptance import main
+
+        code = main(["isolation_acceptance.py", str(Path("/tmp/pertbench_isolation_acceptance.json"))])
+        assert code in {0, 3}
+    if required_live:
+        if not os.environ.get("PERTBENCH_LIVE_CONFIG"):
+            pytest.fail("blocked: live acceptance was requested but PERTBENCH_LIVE_CONFIG is missing")
+        pytest.fail("blocked: live episode runner is not executed in this unit test; use pertbench-long run with the task template")
 
 
 def test_e05_development_overlap_rejected(tmp_path: Path):

@@ -233,6 +233,7 @@ class DockerPythonExecutor(PythonExecutor):
         required_digest: str | None = None,
         mode: str = "isolated_eval",
         workspace_gib: int | None = None,
+        acceptance_report: dict | None = None,
     ) -> None:
         super().__init__()
         self.image = image
@@ -259,7 +260,7 @@ class DockerPythonExecutor(PythonExecutor):
             backend="docker",
             resolved_digest=self.resolved_digest,
             attestation_digest=required_digest,
-            acceptance_report=None,
+            acceptance_report=acceptance_report,
         )
         if required_digest and not self.image_pinned:
             raise IsolationUnavailable("analysis image digest does not match runtime.isolation_attestation.digest")
@@ -453,6 +454,7 @@ def make_executor(
     cpu: int = 2,
     required_digest: str | None = None,
     workspace_gib: int | None = None,
+    acceptance_report: dict | None = None,
 ) -> PythonExecutor:
     if mode == "local_trusted_debug":
         return DebugPythonExecutor()
@@ -467,4 +469,5 @@ def make_executor(
         required_digest=required_digest,
         mode=mode,
         workspace_gib=workspace_gib,
+        acceptance_report=acceptance_report,
     )

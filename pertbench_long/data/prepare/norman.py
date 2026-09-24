@@ -12,7 +12,7 @@ import pandas as pd
 
 from pertbench_long import __version__
 from pertbench_long.data.parsing import NTC_TOKENS, is_missing, parse_bool
-from pertbench_long.data.prepare.matrix_io import align_barcodes, publish_directory, read_expression, take_rows
+from pertbench_long.data.prepare.matrix_io import align_barcodes, publish_directory, read_expression, read_mex_bundle, take_rows
 from pertbench_long.episodes.evidence import PREPARED_MANIFEST_VERSION, PREPARED_PROVENANCE_VERSION
 from pertbench_long.errors import ConfigError, SchemaError
 from pertbench_long.hashes import sha256_file, sha256_json
@@ -28,7 +28,7 @@ from pertbench_long.schemas.conditions import (
 def _select_counts(source: Path, input_profile: str | None) -> Path:
     csv_path = source / "counts.csv"
     h5_path = source / "counts.h5ad"
-    mtx_path = source / "matrix.mtx"
+    mtx_path = source / "matrix.mtx" if (source / "matrix.mtx").exists() else source / "matrix.mtx.gz"
     if input_profile == "csv_bundle":
         if not csv_path.exists():
             raise ConfigError("input_profile=csv_bundle requires counts.csv")
@@ -88,6 +88,8 @@ def resolve_norman_identity(raw: str, *, guide_table: dict[str, dict[str, Any]] 
             item = guide_table[part]
             resolved.append(str(item["gene"]))
             ntc_flags.append(bool(item["is_ntc"]))
+        elif part.lower().startswith(("guide", "grna", "sgrna")):
+            raise SchemaError(f"unmapped guide id {part!r} is not a gene; provide guides.csv")
         else:
             resolved.append(part)
             ntc_flags.append(part.lower() in NTC_TOKENS)
@@ -111,6 +113,8 @@ def prepare_norman(
     accession: str = "GSE133344",
     input_profile: str | None = None,
     require_guide_map: bool = False,
+    matrix_layer: str | None = None,
+    matrix_kind: str | None = None,
 ) -> dict[str, Any]:
     source = Path(source_dir)
     dest = Path(dest_dir)
@@ -129,17 +133,12 @@ def prepare_norman(
         raise SchemaError("duplicate barcodes in Norman cell_identities.csv")
     guide_col = _require_col(ident, ("guide_identity", "perturbation", "guide", "perturbation_id"), what="guide identity")
     guide_table = _guide_lookup(source / "guides.csv")
-    if counts_path.name == "matrix.mtx":
-        from scipy import io as spio
-        from scipy import sparse
-
-        matrix = sparse.csr_matrix(spio.mmread(counts_path))
-        barcodes = (source / "barcodes.tsv").read_text(encoding="utf-8").split()
-        genes = [line.split("\t")[0] for line in (source / "genes.tsv").read_text(encoding="utf-8").splitlines() if line.strip()]
-        obs_ids = barcodes
-        matrix_kind = "counts"
+    mex_files: list[Path] = []
+    if counts_path.suffix.lower() == ".mtx" or counts_path.name.startswith("matrix.mtx"):
+        matrix, obs_ids, genes, matrix_kind, mex_files = read_mex_bundle(source)
     else:
-        matrix, obs_ids, genes, matrix_kind = read_expression(counts_path)
+        declared = "counts" if counts_path.suffix.lower() == ".csv" else matrix_kind
+        matrix, obs_ids, genes, matrix_kind = read_expression(counts_path, layer=matrix_layer, declared_kind=declared)
     if len(genes) != len(set(genes)):
         raise SchemaError("duplicate gene IDs in Norman counts")
     if len(obs_ids) != len(set(obs_ids)):
@@ -232,8 +231,9 @@ def prepare_norman(
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "source_dir": str(source.resolve()),
         "source_files": {
-            "cell_identities.csv": {"sha256": sha256_file(ident_path), "sha256_verified_by": "local_compute"},
-            counts_path.name: {"sha256": sha256_file(counts_path), "sha256_verified_by": "local_compute"},
+            path.name: {"sha256": sha256_file(path), "sha256_verified_by": "local_compute", "path": str(path)}
+            for path in [ident_path, *mex_files, counts_path, source / "guides.csv"]
+            if path.exists()
         },
         "matrix": {"file": "matrix.h5ad", "layer": "counts", "matrix_kind": "counts"},
         "intervention": "CRISPRa",

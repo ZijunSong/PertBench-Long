@@ -153,6 +153,49 @@ def atomic_download(url: str, dest: Path, *, timeout: int = 60) -> None:
     tmp.replace(dest)
 
 
+def select_profile_sources(sources: list[SourceFile], payload: Mapping[str, Any], input_profile: str | None) -> list[SourceFile]:
+    if not input_profile:
+        return sources
+    profiles = dict(payload.get("interchange_profiles") or {})
+    if input_profile not in profiles:
+        raise ConfigError(f"unknown input_profile {input_profile!r}")
+    spec = profiles[input_profile]
+    required = [str(name) for name in spec.get("required") or []]
+    optional = [str(name) for name in spec.get("optional") or []]
+    by_name = {item.name: item for item in sources}
+    selected: list[SourceFile] = []
+    for name in required:
+        base = by_name.get(name)
+        selected.append(
+            SourceFile(
+                name=name,
+                role=base.role if base else "profile_required",
+                url=base.url if base else None,
+                sha256=base.sha256 if base else None,
+                expected_bytes=base.expected_bytes if base else None,
+                format=base.format if base else "unknown",
+                status="required",
+                accession=base.accession if base else None,
+                author_entry=base.author_entry if base else None,
+                note=base.note if base else "",
+                requirement="required",
+            )
+        )
+    for name in optional:
+        base = by_name.get(name)
+        selected.append(
+            SourceFile(
+                name=name,
+                role=base.role if base else "profile_optional",
+                url=base.url if base else None,
+                sha256=base.sha256 if base else None,
+                requirement="optional",
+                note=base.note if base else "",
+            )
+        )
+    return selected
+
+
 def fetch_dataset(
     dataset_id: str,
     *,
@@ -160,6 +203,7 @@ def fetch_dataset(
     manifest_path: Path | str | None = None,
     offline: bool = False,
     timeout: int = 60,
+    input_profile: str | None = None,
 ) -> FetchReport:
     root = resolve_data_root(data_root)
     if manifest_path is None:
@@ -168,7 +212,8 @@ def fetch_dataset(
     manifest_path = Path(manifest_path)
     if not manifest_path.exists():
         raise ConfigError(f"acquisition manifest missing: {manifest_path}")
-    ds, release_id, sources, _payload = load_source_files(manifest_path)
+    ds, release_id, sources, payload = load_source_files(manifest_path)
+    sources = select_profile_sources(sources, payload, input_profile)
     dest = raw_dir(root, ds or dataset_id, release_id or "v1")
     dest.mkdir(parents=True, exist_ok=True)
     notes = [
@@ -195,6 +240,17 @@ def fetch_dataset(
             files.append({"name": source.name, "role": source.role, "status": "optional_absent", "note": source.note})
             continue
         if source.requirement == "one_of":
+            if source.url and not offline:
+                try:
+                    atomic_download(source.url, path, timeout=timeout)
+                    info = _verify_existing(path, source)
+                    info["status"] = "downloaded"
+                    files.append(info)
+                except IntegrityError:
+                    if path.exists():
+                        path.unlink()
+                    raise
+                continue
             files.append({"name": source.name, "role": source.role, "status": "one_of_absent", "group": source.group})
             continue
         if offline or not source.url:
