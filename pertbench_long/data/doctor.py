@@ -58,7 +58,7 @@ def doctor_data(
     elif raw.exists() and not raw_has_files:
         report.update({"status": STATUS_MISSING_SOURCE, "note": "raw directory exists but contains no files"})
         return report
-    missing_raw = [s.name for s in sources if s.name and not (raw / s.name).exists()]
+    missing_raw = [s.name for s in sources if s.requirement == "required" and s.name and not (raw / s.name).exists()]
     if sources and missing_raw and not (prepared / "matrix.h5ad").exists():
         report.update({"status": STATUS_MISSING_SOURCE, "missing": missing_raw})
         return report
@@ -75,8 +75,29 @@ def doctor_data(
         return {**report, "status": STATUS_MISSING_METADATA, "reason": "provenance missing matrix_kind"}
     import pandas as pd
 
+    qc_path = prepared / "qc_report.json"
+    try:
+        qc = json.loads(qc_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {**report, "status": "invalid_matrix", "reason": "qc_report_unreadable"}
+    if not qc or not qc.get("status") or not qc.get("n_cells"):
+        return {**report, "status": "empty_qc", "reason": "empty_qc"}
+    try:
+        import anndata as ad
+
+        adata = ad.read_h5ad(prepared / "matrix.h5ad")
+        n_obs, n_vars = int(adata.n_obs), int(adata.n_vars)
+    except Exception as exc:
+        return {**report, "status": "invalid_matrix", "reason": "invalid_matrix", "detail": type(exc).__name__}
+    if n_obs <= 0 or n_vars <= 0:
+        return {**report, "status": "invalid_matrix", "reason": "invalid_matrix"}
     cond = pd.read_parquet(prepared / "conditions.parquet")
-    n = int(cond.shape[0])
+    treated = cond
+    if "perturbation_kind" in cond.columns:
+        treated = cond[cond["perturbation_kind"].astype(str) != "control"]
+    n = int(treated.shape[0])
+    if n <= 0:
+        return {**report, "status": "insufficient_conditions", "reason": "insufficient_eligible_conditions", "n_treated": 0}
     if n < min_candidates + min_targets:
         report.update(
             {

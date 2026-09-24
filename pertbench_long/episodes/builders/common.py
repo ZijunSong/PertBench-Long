@@ -87,10 +87,17 @@ def build_episode_from_condition_ids(
     provenance_verified: bool = False,
     source_verified: bool = False,
     scoring_scale_hash: str | None = None,
+    evidence: Mapping[str, Any] | None = None,
     development_episodes: Sequence[Mapping[str, Any]] | None = None,
     seed: int | None = None,
 ) -> dict[str, Any]:
     task = get_task(protocol)
+    allowed_policies = {"matched_vehicle_v1", "matched_ntc_v1", "target_control_available_v1"}
+    allowed_estimands = {"auto", "replicate_equal_weight", "cell_weighted_descriptive", "donor_equal_weight"}
+    if reference_policy not in allowed_policies:
+        raise UnsupportedProfile(f"unknown reference_policy {reference_policy!r}")
+    if label_estimand not in allowed_estimands:
+        raise UnsupportedProfile(f"unknown label_estimand {label_estimand!r}")
     if experimental_budget < 0:
         raise UnsupportedProfile("experimental_budget must be >= 0")
     if len(queryable_condition_ids) < min_candidates:
@@ -150,9 +157,10 @@ def build_episode_from_condition_ids(
         requested_track=requested_track,
         provenance_verified=provenance_verified,
         source_verified=source_verified,
-        split_audited=True,
+        split_audited=bool((evidence or {}).get("split_audited")),
         labels_validated=store.summary.matrix_kind not in {"unknown", "scaled"},
         scoring_scale_hash=scoring_scale_hash,
+        evidence=evidence,
     )
     scoring_track = eligibility["scoring_track"]
     if store.summary.matrix_kind in {"unknown", "scaled"}:
@@ -284,9 +292,16 @@ def build_episode_from_condition_ids(
             [store.records[j].donor for j in store.condition_to_rows[cid]],
             [store.records[j].donor for j in store.condition_to_rows[ctrl_id]],
         )
+        def _group(rec) -> str | None:
+            if not rec.replicate_id:
+                return None
+            if rec.batch_id:
+                return f"{rec.batch_id}|{rec.replicate_id}"
+            return str(rec.replicate_id)
+
         replicates[tid] = (
-            [store.records[j].replicate_id for j in store.condition_to_rows[cid]],
-            [store.records[j].replicate_id for j in store.condition_to_rows[ctrl_id]],
+            [_group(store.records[j]) for j in store.condition_to_rows[cid]],
+            [_group(store.records[j]) for j in store.condition_to_rows[ctrl_id]],
         )
         targets_meta.append(
             TargetDescription(

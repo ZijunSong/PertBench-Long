@@ -9,5 +9,6 @@
 - Input: user-supplied directory only. `/data/ppnm` is never implied.
 - Matrix kind: declared by the caller. A third-party h5ad is not labeled raw counts unless declared.
 - Identity: `cid_v1` over context, compound, molar-normalized dose, time, assay, and vehicle/reference type.
-- Status: fetch/prepare/adapter implemented and tested on author-format fixtures. Full GEO download is **not_run** (URLs not locked).
+- Source lock: **blocked**. No publisher checksum is recorded. `cells.csv` / `counts.csv` are an interchange profile, not verified GEO filenames.
+- Status: fetch/prepare/adapter implemented and tested on interchange fixtures. Full GEO download is **not_run**.
 

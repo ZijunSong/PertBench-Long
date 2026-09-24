@@ -10,7 +10,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pertbench_long import __version__
 from pertbench_long.data.parsing import NTC_TOKENS, is_missing, parse_bool
+from pertbench_long.data.prepare.matrix_io import align_barcodes, publish_directory, read_expression, take_rows
+from pertbench_long.episodes.evidence import PREPARED_MANIFEST_VERSION, PREPARED_PROVENANCE_VERSION
 from pertbench_long.errors import ConfigError, SchemaError
 from pertbench_long.hashes import sha256_file, sha256_json
 from pertbench_long.schemas.conditions import (
@@ -22,19 +25,28 @@ from pertbench_long.schemas.conditions import (
 )
 
 
-def _read_counts(path: Path) -> tuple[np.ndarray, list[str], list[str]]:
-    if path.suffix.lower() == ".h5ad":
-        import anndata as ad
-
-        adata = ad.read_h5ad(path)
-        matrix = adata.layers["counts"] if "counts" in adata.layers else adata.X
-        if hasattr(matrix, "toarray"):
-            matrix = np.asarray(matrix.toarray(), dtype=np.float64)
-        else:
-            matrix = np.asarray(matrix, dtype=np.float64)
-        return matrix, [str(i) for i in adata.obs_names], [str(g) for g in adata.var_names]
-    frame = pd.read_csv(path, index_col=0)
-    return frame.to_numpy(dtype=np.float64), [str(i) for i in frame.index], [str(c) for c in frame.columns]
+def _select_counts(source: Path, input_profile: str | None) -> Path:
+    csv_path = source / "counts.csv"
+    h5_path = source / "counts.h5ad"
+    mtx_path = source / "matrix.mtx"
+    if input_profile == "csv_bundle":
+        if not csv_path.exists():
+            raise ConfigError("input_profile=csv_bundle requires counts.csv")
+        return csv_path
+    if input_profile == "h5ad_bundle":
+        if not h5_path.exists():
+            raise ConfigError("input_profile=h5ad_bundle requires counts.h5ad")
+        return h5_path
+    if input_profile == "mex_bundle":
+        if not mtx_path.exists():
+            raise ConfigError("input_profile=mex_bundle requires matrix.mtx, barcodes.tsv, and genes.tsv")
+        return mtx_path
+    present = [p for p in (csv_path, h5_path, mtx_path) if p.exists()]
+    if len(present) > 1:
+        raise ConfigError("multiple Norman count inputs exist; set input_profile")
+    if not present:
+        raise ConfigError("Norman prepare requires counts.csv, counts.h5ad, or a Cell Ranger matrix.mtx bundle")
+    return present[0]
 
 
 def _require_col(frame: pd.DataFrame, names: tuple[str, ...], *, what: str) -> str:
@@ -97,15 +109,19 @@ def prepare_norman(
     *,
     study: str = "norman2019",
     accession: str = "GSE133344",
+    input_profile: str | None = None,
+    require_guide_map: bool = False,
 ) -> dict[str, Any]:
     source = Path(source_dir)
     dest = Path(dest_dir)
     if not source.exists():
         raise ConfigError(f"Norman source directory does not exist: {source}")
     ident_path = source / "cell_identities.csv"
-    counts_path = source / "counts.csv" if (source / "counts.csv").exists() else source / "counts.h5ad"
-    if not ident_path.exists() or not counts_path.exists():
-        raise ConfigError("Norman prepare requires cell_identities.csv and counts.csv|counts.h5ad")
+    counts_path = _select_counts(source, input_profile)
+    if not ident_path.exists():
+        raise ConfigError("Norman prepare requires cell_identities.csv")
+    if require_guide_map and not (source / "guides.csv").exists():
+        raise ConfigError("this Norman profile requires guides.csv; unresolved guide IDs are not treated as genes")
     ident = pd.read_csv(ident_path)
     barcode_col = _require_col(ident, ("cell_barcode", "barcode", "cell"), what="cell barcode")
     ident[barcode_col] = ident[barcode_col].astype(str)
@@ -113,17 +129,26 @@ def prepare_norman(
         raise SchemaError("duplicate barcodes in Norman cell_identities.csv")
     guide_col = _require_col(ident, ("guide_identity", "perturbation", "guide", "perturbation_id"), what="guide identity")
     guide_table = _guide_lookup(source / "guides.csv")
-    matrix, obs_ids, genes = _read_counts(counts_path)
+    if counts_path.name == "matrix.mtx":
+        from scipy import io as spio
+        from scipy import sparse
+
+        matrix = sparse.csr_matrix(spio.mmread(counts_path))
+        barcodes = (source / "barcodes.tsv").read_text(encoding="utf-8").split()
+        genes = [line.split("\t")[0] for line in (source / "genes.tsv").read_text(encoding="utf-8").splitlines() if line.strip()]
+        obs_ids = barcodes
+        matrix_kind = "counts"
+    else:
+        matrix, obs_ids, genes, matrix_kind = read_expression(counts_path)
     if len(genes) != len(set(genes)):
         raise SchemaError("duplicate gene IDs in Norman counts")
     if len(obs_ids) != len(set(obs_ids)):
         raise SchemaError("duplicate barcodes in Norman counts")
     meta_index = {str(b): i for i, b in enumerate(ident[barcode_col])}
-    missing_identity = [oid for oid in obs_ids if oid not in meta_index]
-    keep_obs = [oid for oid in obs_ids if oid in meta_index]
+    keep_obs, rows, missing_identity = align_barcodes(obs_ids, meta_index)
     if not keep_obs:
         raise SchemaError("no overlapping barcodes between Norman counts and cell_identities.csv")
-    matrix = np.asarray(matrix[[obs_ids.index(oid) for oid in keep_obs]], dtype=np.float64)
+    matrix = take_rows(matrix, rows)
     ctx_col = "cell_type" if "cell_type" in ident.columns else None
     sample_col = "sample_id" if "sample_id" in ident.columns else None
     rep_col = "replicate_id" if "replicate_id" in ident.columns else None
@@ -169,15 +194,20 @@ def prepare_norman(
     for col in obs.columns:
         if obs[col].dtype == object:
             obs[col] = obs[col].map(lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else v)
-    dest.mkdir(parents=True, exist_ok=True)
+    staging = dest.parent / f".{dest.name}.partial"
+    if staging.exists():
+        import shutil
+
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
     import anndata as ad
 
     adata = ad.AnnData(X=matrix, obs=obs, var=pd.DataFrame(index=genes))
-    adata.layers["counts"] = matrix.copy()
-    adata.uns["matrix_kind"] = "counts"
+    adata.layers["counts"] = matrix.copy() if hasattr(matrix, "copy") else matrix
+    adata.uns["matrix_kind"] = matrix_kind
     adata.uns["counts_layer"] = "counts"
     adata.uns["intervention"] = "CRISPRa"
-    matrix_path = dest / "matrix.h5ad"
+    matrix_path = staging / "matrix.h5ad"
     adata.write_h5ad(matrix_path)
     cond = (
         obs.groupby("condition_id", dropna=False)
@@ -190,9 +220,14 @@ def prepare_norman(
         )
         .reset_index()
     )
-    cond.to_parquet(dest / "conditions.parquet", index=False)
+    cond_path = staging / "conditions.parquet"
+    cond.to_parquet(cond_path, index=False)
     provenance = {
+        "provenance_version": PREPARED_PROVENANCE_VERSION,
         "dataset_id": study,
+        "source_lock_status": "blocked",
+        "code_version": __version__,
+        "input_profile": input_profile or counts_path.name,
         "accession": accession,
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "source_dir": str(source.resolve()),
@@ -213,7 +248,8 @@ def prepare_norman(
             "This is a local prepare record, not a locked GEO file list.",
         ],
     }
-    (dest / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+    prov_path = staging / "provenance.json"
+    prov_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     qc = {
         "status": "ok",
         "n_cells": int(matrix.shape[0]),
@@ -224,5 +260,17 @@ def prepare_norman(
         "dropped_missing_identity": missing_identity[:20],
         "provenance_sha256": sha256_json(provenance),
     }
-    (dest / "qc_report.json").write_text(json.dumps(qc, indent=2), encoding="utf-8")
-    return {"status": "ok", "dest": str(dest), "matrix": str(matrix_path), "qc": qc, "provenance": str(dest / "provenance.json")}
+    qc_path = staging / "qc_report.json"
+    qc_path.write_text(json.dumps(qc, indent=2), encoding="utf-8")
+    manifest = {
+        "manifest_version": PREPARED_MANIFEST_VERSION,
+        "provenance_sha256": sha256_file(prov_path),
+        "outputs": {
+            "matrix.h5ad": sha256_file(matrix_path),
+            "conditions.parquet": sha256_file(cond_path),
+            "qc_report.json": sha256_file(qc_path),
+        },
+    }
+    (staging / "prepared_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    publish_directory(staging, dest)
+    return {"status": "ok", "dest": str(dest), "matrix": str(dest / "matrix.h5ad"), "qc": qc, "provenance": str(dest / "provenance.json")}

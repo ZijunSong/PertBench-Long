@@ -358,6 +358,7 @@ def validate_experiment_record(payload: Mapping[str, Any], where: str = "record"
         batch_id=data.get("batch_id"),
         donor_id=data.get("donor_id") or donor,
         control_group_id=data.get("control_group_id"),
+        vehicle=None if data.get("vehicle") in {None, ""} else str(data.get("vehicle")),
         identity_version=str(data.get("identity_version") or ""),
         missing_identity_reason=data.get("missing_identity_reason"),
     )

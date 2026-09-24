@@ -9,4 +9,5 @@
 - Intervention: CRISPRa, not a genome-wide knockout screen.
 - Pair identity: unordered `A+B` == `B+A`. `gene+NTC` is a single-gene condition; NTC is not a second intervened gene.
 - Missing combinations are not filled with additivity models.
-- Status: fetch/prepare/adapter implemented and tested on author-format fixtures. Full GEO download is **not_run**.
+- Source lock: **blocked**. No publisher checksum is recorded. CSV and Cell Ranger MEX (`matrix.mtx`, `barcodes.tsv`, `genes.tsv`, `cell_identities.csv`) are interchange profiles. `guides.csv` is optional unless the profile says the identity table needs it.
+- Status: fetch/prepare/adapter implemented and tested on interchange fixtures. Full GEO download is **not_run**.

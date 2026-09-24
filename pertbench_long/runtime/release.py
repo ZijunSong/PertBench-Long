@@ -132,6 +132,26 @@ def check_release(public_dir: Path, private_manifest: Path) -> dict[str, Any]:
     }
 
 
+MOUNT_POLICY = "declared_public_v1"
+PUBLIC_PROTOCOL_FILES = ("episode.json", "submission_contract.json")
+
+
+def declared_public_relative_paths(public_spec) -> list[str]:
+    """Relative paths inside the public pack that an agent workspace may see."""
+    rels = ["evidence/" + name for name in declared_public_evidence_names(public_spec)]
+    rels.append(str(public_spec.gene_universe_artifact))
+    rels.extend(PUBLIC_PROTOCOL_FILES)
+    rels.extend(sorted(dict(getattr(public_spec, "artifact_metadata", {}) or {}).get("public_files") or {}))
+    cleaned = []
+    for rel in rels:
+        token = str(rel).replace("\\", "/")
+        if token.startswith("/") or ".." in Path(token).parts:
+            raise IntegrityError(f"public artifact path escapes the pack: {rel}")
+        if token not in cleaned:
+            cleaned.append(token)
+    return cleaned
+
+
 def copy_declared_public_inputs(public_dir: Path, workspace: Path, public_spec) -> list[str]:
     """Copy only the declared initial/reference evidence plus public protocol files."""
     import shutil as _shutil
@@ -145,14 +165,19 @@ def copy_declared_public_inputs(public_dir: Path, workspace: Path, public_spec) 
         dest = workspace / "evidence" / name
         _shutil.copyfile(src, dest)
         copied.append(f"evidence/{name}")
-    protocol_files = [public_spec.gene_universe_artifact, "episode.json", "submission_contract.json"]
-    protocol_files.extend(sorted(dict(getattr(public_spec, "artifact_metadata", {}) or {}).get("public_files") or {}))
-    for rel in protocol_files:
-        src = public_dir / rel
+    for rel in declared_public_relative_paths(public_spec):
+        if rel.startswith("evidence/"):
+            continue
+        src = (public_dir / rel).resolve()
+        if not str(src).startswith(str(public_dir.resolve())):
+            raise IntegrityError(f"public artifact escapes the pack: {rel}")
+        if src.is_symlink():
+            raise IntegrityError(f"public artifact symlink is not allowed: {rel}")
         if src.exists():
-            dest = workspace / Path(rel).name
+            dest = workspace / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
             _shutil.copyfile(src, dest)
-            copied.append(Path(rel).name)
+            copied.append(rel)
     return copied
 
 

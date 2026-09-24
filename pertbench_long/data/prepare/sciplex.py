@@ -10,7 +10,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pertbench_long import __version__
 from pertbench_long.data.parsing import is_missing, parse_bool, require_dose_pair, require_time_pair
+from pertbench_long.data.prepare.matrix_io import align_barcodes, publish_directory, read_expression, take_rows
+from pertbench_long.episodes.evidence import PREPARED_MANIFEST_VERSION, PREPARED_PROVENANCE_VERSION
 from pertbench_long.errors import ConfigError, SchemaError
 from pertbench_long.hashes import sha256_file, sha256_json
 from pertbench_long.schemas.conditions import (
@@ -22,24 +25,24 @@ from pertbench_long.schemas.conditions import (
 from pertbench_long.data.parsing import looks_like_control_name
 
 
-def _read_counts(path: Path) -> tuple[np.ndarray, list[str], list[str]]:
-    if path.suffix.lower() == ".h5ad":
-        import anndata as ad
-
-        adata = ad.read_h5ad(path)
-        if "counts" in adata.layers:
-            matrix = adata.layers["counts"]
-            layer = "counts"
-        else:
-            matrix = adata.X
-            layer = "X"
-        if hasattr(matrix, "toarray"):
-            matrix = np.asarray(matrix.toarray(), dtype=np.float64)
-        else:
-            matrix = np.asarray(matrix, dtype=np.float64)
-        return matrix, [str(i) for i in adata.obs_names], [str(g) for g in adata.var_names]
-    frame = pd.read_csv(path, index_col=0)
-    return frame.to_numpy(dtype=np.float64), [str(i) for i in frame.index], [str(c) for c in frame.columns]
+def _select_counts(source: Path, input_profile: str | None) -> Path:
+    csv_path = source / "counts.csv"
+    h5_path = source / "counts.h5ad"
+    if input_profile == "csv_bundle":
+        if not csv_path.exists():
+            raise ConfigError("input_profile=csv_bundle requires counts.csv")
+        return csv_path
+    if input_profile == "h5ad_bundle":
+        if not h5_path.exists():
+            raise ConfigError("input_profile=h5ad_bundle requires counts.h5ad")
+        return h5_path
+    if csv_path.exists() and h5_path.exists():
+        raise ConfigError("both counts.csv and counts.h5ad exist; set input_profile instead of picking by file order")
+    if csv_path.exists():
+        return csv_path
+    if h5_path.exists():
+        return h5_path
+    raise ConfigError("sci-Plex prepare requires counts.csv or counts.h5ad")
 
 
 def _require_col(frame: pd.DataFrame, names: tuple[str, ...], *, what: str) -> str:
@@ -56,6 +59,8 @@ def prepare_sciplex(
     study: str = "sciplex3",
     accession: str = "GSM4150378",
     unit_basis: str | None = None,
+    input_profile: str | None = None,
+    matrix_layer: str | None = None,
 ) -> dict[str, Any]:
     """Align counts with cell/sample/drug/dose/time/vehicle annotations.
 
@@ -67,27 +72,26 @@ def prepare_sciplex(
     if not source.exists():
         raise ConfigError(f"sci-Plex source directory does not exist: {source}")
     cells_path = source / "cells.csv"
-    counts_path = source / "counts.csv" if (source / "counts.csv").exists() else source / "counts.h5ad"
-    if not cells_path.exists() or not counts_path.exists():
-        raise ConfigError("sci-Plex prepare requires cells.csv and counts.csv|counts.h5ad in the source directory")
+    counts_path = _select_counts(source, input_profile)
+    if not cells_path.exists():
+        raise ConfigError("sci-Plex prepare requires cells.csv")
     cells = pd.read_csv(cells_path)
     barcode_col = _require_col(cells, ("cell_barcode", "barcode", "cell", "obs_id"), what="cell barcode")
     cells[barcode_col] = cells[barcode_col].astype(str)
     if cells[barcode_col].duplicated().any():
         raise SchemaError("duplicate cell barcodes in sci-Plex cells.csv; they are not silently dropped")
-    matrix, obs_ids, genes = _read_counts(counts_path)
+    matrix, obs_ids, genes, matrix_kind = read_expression(counts_path, layer=matrix_layer)
     if len(genes) != len(set(genes)):
         raise SchemaError("duplicate gene IDs in sci-Plex counts; they are not silently dropped")
     if len(obs_ids) != len(set(obs_ids)):
         raise SchemaError("duplicate barcodes in sci-Plex counts")
     cell_index = {str(b): i for i, b in enumerate(cells[barcode_col])}
-    missing_identity = [oid for oid in obs_ids if oid not in cell_index]
-    extra_meta = [b for b in cells[barcode_col] if b not in set(obs_ids)]
-    keep_obs = [oid for oid in obs_ids if oid in cell_index]
+    known = set(obs_ids)
+    extra_meta = [b for b in cells[barcode_col] if b not in known]
+    keep_obs, rows, missing_identity = align_barcodes(obs_ids, cell_index)
     if not keep_obs:
         raise SchemaError("no overlapping barcodes between sci-Plex counts and cells.csv")
-    rows = [obs_ids.index(oid) for oid in keep_obs]
-    matrix = np.asarray(matrix[rows], dtype=np.float64)
+    matrix = take_rows(matrix, rows)
     ct_col = _require_col(cells, ("cell_type", "cell_line", "context_id"), what="cell context")
     pert_col = _require_col(cells, ("perturbation", "drug", "treatment", "perturbation_id"), what="drug")
     dose_col = _require_col(cells, ("dose", "dose_value"), what="dose")
@@ -152,16 +156,22 @@ def prepare_sciplex(
     for col in obs.columns:
         if obs[col].dtype == object:
             obs[col] = obs[col].map(lambda v: "" if v is None or (isinstance(v, float) and pd.isna(v)) else v)
-    dest.mkdir(parents=True, exist_ok=True)
+    staging = dest.parent / f".{dest.name}.partial"
+    if staging.exists():
+        import shutil
+
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
     import anndata as ad
 
     adata = ad.AnnData(X=matrix, obs=obs, var=pd.DataFrame(index=genes))
-    adata.layers["counts"] = matrix.copy()
-    adata.uns["matrix_kind"] = "counts"
-    adata.uns["counts_layer"] = "counts"
+    if matrix_kind == "counts":
+        adata.layers["counts"] = matrix.copy() if hasattr(matrix, "copy") else matrix
+        adata.uns["counts_layer"] = "counts"
+    adata.uns["matrix_kind"] = matrix_kind
     adata.uns["study"] = study
     adata.uns["accession"] = accession
-    matrix_path = dest / "matrix.h5ad"
+    matrix_path = staging / "matrix.h5ad"
     adata.write_h5ad(matrix_path)
     cond = (
         obs.groupby("condition_id", dropna=False)
@@ -178,10 +188,14 @@ def prepare_sciplex(
         )
         .reset_index()
     )
-    cond_path = dest / "conditions.parquet"
+    cond_path = staging / "conditions.parquet"
     cond.to_parquet(cond_path, index=False)
     provenance = {
+        "provenance_version": PREPARED_PROVENANCE_VERSION,
         "dataset_id": study,
+        "source_lock_status": "blocked",
+        "code_version": __version__,
+        "input_profile": input_profile or counts_path.suffix.lstrip("."),
         "accession": accession,
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "source_dir": str(source.resolve()),
@@ -189,7 +203,7 @@ def prepare_sciplex(
             "cells.csv": {"sha256": sha256_file(cells_path), "sha256_verified_by": "local_compute"},
             counts_path.name: {"sha256": sha256_file(counts_path), "sha256_verified_by": "local_compute"},
         },
-        "matrix": {"file": "matrix.h5ad", "layer": "counts", "matrix_kind": "counts"},
+        "matrix": {"file": "matrix.h5ad", "layer": "counts" if matrix_kind == "counts" else "X", "matrix_kind": matrix_kind},
         "unit_basis": unit_basis,
         "n_cells": int(matrix.shape[0]),
         "n_genes": int(matrix.shape[1]),
@@ -202,7 +216,7 @@ def prepare_sciplex(
             "This provenance is a local prepare record, not an independently audited GEO lock.",
         ],
     }
-    prov_path = dest / "provenance.json"
+    prov_path = staging / "provenance.json"
     prov_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     qc = {
         "status": "ok",
@@ -216,6 +230,17 @@ def prepare_sciplex(
         "peak_rss_note": "prepare peak RSS is a data-prep measurement, not the agent resource_profile",
         "provenance_sha256": sha256_json(provenance),
     }
-    qc_path = dest / "qc_report.json"
+    qc_path = staging / "qc_report.json"
     qc_path.write_text(json.dumps(qc, indent=2), encoding="utf-8")
-    return {"status": "ok", "dest": str(dest), "matrix": str(matrix_path), "provenance": str(prov_path), "qc": qc}
+    manifest = {
+        "manifest_version": PREPARED_MANIFEST_VERSION,
+        "provenance_sha256": sha256_file(prov_path),
+        "outputs": {
+            "matrix.h5ad": sha256_file(matrix_path),
+            "conditions.parquet": sha256_file(cond_path),
+            "qc_report.json": sha256_file(qc_path),
+        },
+    }
+    (staging / "prepared_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    publish_directory(staging, dest)
+    return {"status": "ok", "dest": str(dest), "matrix": str(dest / "matrix.h5ad"), "provenance": str(dest / "provenance.json"), "qc": qc}

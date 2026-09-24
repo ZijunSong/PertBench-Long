@@ -4,6 +4,16 @@
   "release_id": "sciplex3_v1",
   "license": "user_must_confirm_source_license",
   "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "source_lock": {
+    "status": "blocked",
+    "reason": "GEO supplement file names, URLs, byte sizes, and checksums were not verified in this revision. cells.csv/counts.csv are an interchange profile, not locked author filenames.",
+    "publisher_checksum": null,
+    "maintainer_computed_lock": null
+  },
+  "interchange_profiles": {
+    "csv_bundle": {"required": ["cells.csv", "counts.csv"], "optional": []},
+    "h5ad_bundle": {"required": ["cells.csv", "counts.h5ad"], "optional": []}
+  },
   "author_entry": "https://github.com/cole-trapnell-lab/sci-plex",
   "raw_sources": [
     {

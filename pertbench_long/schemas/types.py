@@ -207,6 +207,7 @@ class ExperimentRecord:
     batch_id: Optional[str] = None
     donor_id: Optional[str] = None
     control_group_id: Optional[str] = None
+    vehicle: Optional[str] = None
     identity_version: str = ""
     missing_identity_reason: Optional[str] = None
 

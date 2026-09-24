@@ -108,6 +108,8 @@ def build_genetic_pair_episode(
     provenance_verified: bool = False,
     source_verified: bool = False,
     scoring_scale_hash: str | None = None,
+    evidence: dict | None = None,
+    reference_policy: str = "matched_ntc_v1",
     development_episodes: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     roles = assign_pair_roles(
@@ -145,6 +147,8 @@ def build_genetic_pair_episode(
         provenance_verified=provenance_verified,
         source_verified=source_verified,
         scoring_scale_hash=scoring_scale_hash,
+        evidence=evidence,
+        reference_policy=reference_policy,
         development_episodes=development_episodes,
         seed=seed,
         resource_profile=resource_profile,

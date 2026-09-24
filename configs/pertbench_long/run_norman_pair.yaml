@@ -1,0 +1,28 @@
+config_version: "1.0"
+mode: local_trusted_debug
+agent: llm_adaptive_query
+public_dir: ${PERTBENCH_DATA_ROOT}/episodes/norman_pair_pilot_0001/public
+private_manifest: ${PERTBENCH_DATA_ROOT}/episodes/norman_pair_pilot_0001/private/manifest.json
+output: runs/eval/norman_pair
+note: "T2 live template. Not a completed live run. Budget must match the built episode (8)."
+model:
+  backend: openai_compatible_chat
+  base_url: http://127.0.0.1:8000/v1
+  model: YOUR_SERVED_MODEL_NAME
+  auth_mode: bearer_env
+  api_key_env: PERTBENCH_API_KEY
+  action_format: native_tools
+  temperature: 0.0
+  max_output_tokens_per_call: 2048
+  token_parameter: max_tokens
+  request_timeout_s: 120
+  max_retries: 2
+runtime:
+  sandbox: host
+  episode_timeout_s: 1800
+  tool_timeout_s: 60
+  max_agent_steps: 80
+evaluation:
+  experimental_budget_cap: 8
+  seed: 1701
+  allow_unqualified: true

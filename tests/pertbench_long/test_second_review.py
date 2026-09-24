@@ -215,12 +215,16 @@ def test_b02_resume_restores_purchase_and_refuses_submitted(synthetic_episode, t
 def test_b03_isolation_qualified_requires_matching_digest():
     assert isolation_is_qualified(mode="isolated_eval", backend="docker", resolved_digest=None, attestation_digest="sha256:abc") is False
     assert isolation_is_qualified(mode="local_trusted_debug", backend="docker", resolved_digest="sha256:abc", attestation_digest="sha256:abc") is False
+    from pertbench_long.runtime.executor import image_is_pinned
+
+    digest = "sha256:" + "a" * 64
+    assert image_is_pinned(mode="isolated_eval", backend="docker", resolved_digest=digest, attestation_digest=digest)
     assert isolation_is_qualified(
         mode="isolated_eval",
         backend="docker",
-        resolved_digest="sha256:" + "a" * 64,
-        attestation_digest="sha256:" + "a" * 64,
-    )
+        resolved_digest=digest,
+        attestation_digest=digest,
+    ) is False
     from pertbench_long.runtime.executor import DockerPythonExecutor, DebugPythonExecutor
 
     assert getattr(DockerPythonExecutor, "isolation_qualified", False) is not True

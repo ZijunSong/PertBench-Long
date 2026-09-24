@@ -128,6 +128,7 @@ def _import_h5ad_conditions(
     batch_col = _col("batch_id")
     ctrl_col = _col("control_flag")
     donor_col = _col("donor")
+    vehicle_col = _col("vehicle")
 
     records: list[ExperimentRecord] = []
     for i, original_id in enumerate(obs_ids):
@@ -155,6 +156,7 @@ def _import_h5ad_conditions(
         replicate_id = None if not rep_col or pd.isna(row[rep_col]) else str(row[rep_col])
         batch_id = None if not batch_col or pd.isna(row[batch_col]) else str(row[batch_col])
         donor = None if not donor_col or pd.isna(row[donor_col]) else str(row[donor_col])
+        vehicle = None if not vehicle_col or pd.isna(row[vehicle_col]) or str(row[vehicle_col]).strip() == "" else str(row[vehicle_col])
         if kind == PERTURBATION_CONTROL:
             components = (perturbation,) if perturbation else ("control",)
         elif kind in {PERTURBATION_GENETIC_SINGLE, "genetic_pair"}:
@@ -199,6 +201,7 @@ def _import_h5ad_conditions(
             replicate_id=replicate_id,
             batch_id=batch_id,
             donor_id=donor,
+            vehicle=vehicle,
             identity_version="cid_v1",
         )
         validate_experiment_record(asdict(rec), where=f"sciplex[{i}]")

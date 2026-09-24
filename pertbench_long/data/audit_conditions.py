@@ -33,6 +33,9 @@ def _time_key(rec) -> tuple[str, str]:
 
 
 def _vehicle_token(rec) -> str:
+    explicit = getattr(rec, "vehicle", None)
+    if explicit:
+        return str(explicit)
     if rec.perturbation_kind == PERTURBATION_CONTROL:
         comps = rec.resolved_components()
         if comps:
@@ -107,15 +110,30 @@ def match_controls(
             continue
         if row.get("control_group_id") and row["control_group_id"] in meta:
             explicit = row["control_group_id"]
-            if not _row_is_control(meta[explicit]) and meta[explicit]["perturbation_kind"] not in kinds:
+            ctrl = meta[explicit]
+            if not _row_is_control(ctrl) and ctrl["perturbation_kind"] not in kinds:
                 raise AmbiguousCondition(f"explicit control_group_id {explicit} is not a control")
+            if ctrl["time_key"] != row["time_key"] or ctrl["context_id"] != row["context_id"] or ctrl["assay"] != row["assay"] or ctrl["study"] != row["study"]:
+                raise AmbiguousCondition(f"explicit control {explicit} does not match study/context/assay/time")
+            if row["vehicle"] and ctrl["vehicle"] and str(row["vehicle"]).lower() != str(ctrl["vehicle"]).lower():
+                raise AmbiguousCondition(f"explicit control {explicit} vehicle does not match {row['vehicle']}")
             mapping[cid] = explicit
             continue
+        wanted = str(row["vehicle"] or "").lower()
         dim_key = (row["study"], row["context_id"], row["assay"], row["time_key"])
         candidates = []
-        for (study, ctx, assay, time_key, _vehicle), ids in controls_by_key.items():
-            if (study, ctx, assay, time_key) == dim_key:
-                candidates.extend(ids)
+        vehicles = set()
+        for (study, ctx, assay, time_key, vehicle), ids in controls_by_key.items():
+            if (study, ctx, assay, time_key) != dim_key:
+                continue
+            vehicles.add(vehicle)
+            if wanted and vehicle != wanted:
+                continue
+            candidates.extend(ids)
+        if not wanted and len(vehicles) > 1:
+            raise AmbiguousCondition(
+                f"{REASON_AMBIGUOUS}: {cid} has no vehicle and matched multiple reference types {sorted(vehicles)}"
+            )
         candidates = sorted(set(candidates))
         if not candidates:
             continue

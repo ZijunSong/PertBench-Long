@@ -4,6 +4,17 @@
   "release_id": "norman2019_v1",
   "license": "user_must_confirm_source_license",
   "redistribution": "user_must_obtain_source; this repo does not vendor the full matrix",
+  "source_lock": {
+    "status": "blocked",
+    "reason": "GSE133344 file names, URLs, and checksums were not locked. The author README documents Cell Ranger MEX plus cell_identities.csv; that is an interchange profile, not a downloaded lock.",
+    "publisher_checksum": null,
+    "maintainer_computed_lock": null
+  },
+  "interchange_profiles": {
+    "csv_bundle": {"required": ["cell_identities.csv", "counts.csv"], "optional": ["guides.csv"]},
+    "h5ad_bundle": {"required": ["cell_identities.csv", "counts.h5ad"], "optional": ["guides.csv"]},
+    "mex_bundle": {"required": ["cell_identities.csv", "matrix.mtx", "barcodes.tsv", "genes.tsv"], "optional": ["guides.csv"]}
+  },
   "author_entry": "https://github.com/thomasmaxwellnorman/Perturbseq_GI",
   "raw_sources": [
     {
@@ -34,6 +45,7 @@
       "url": null,
       "sha256": null,
       "format": "csv",
+      "requirement": "optional",
       "status": "optional",
       "note": "Optional guide-to-gene/NTC table. Non-targeting tokens are not treated as a second intervened gene."
     }

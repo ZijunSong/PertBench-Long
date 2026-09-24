@@ -38,6 +38,8 @@ class SourceFile:
     accession: str | None = None
     author_entry: str | None = None
     note: str = ""
+    requirement: str = "required"
+    group: str = ""
 
 
 @dataclass
@@ -85,6 +87,8 @@ def load_source_files(manifest_path: Path | str) -> tuple[str, str, list[SourceF
                 accession=None if not raw.get("accession") else str(raw["accession"]),
                 author_entry=None if not raw.get("author_entry") else str(raw["author_entry"]),
                 note=str(raw.get("note") or ""),
+                requirement=str(raw.get("requirement") or ("optional" if str(raw.get("status") or "") == "optional" else "required")),
+                group=str(raw.get("group") or ""),
             )
         )
     return spec.dataset_id, spec.release_id, items, payload
@@ -187,6 +191,12 @@ def fetch_dataset(
             info["status"] = REASON_OFFLINE_REUSED
             files.append(info)
             continue
+        if source.requirement == "optional":
+            files.append({"name": source.name, "role": source.role, "status": "optional_absent", "note": source.note})
+            continue
+        if source.requirement == "one_of":
+            files.append({"name": source.name, "role": source.role, "status": "one_of_absent", "group": source.group})
+            continue
         if offline or not source.url:
             missing.append(source.name)
             files.append(
@@ -210,6 +220,13 @@ def fetch_dataset(
             if path.exists():
                 path.unlink()
             raise
+    groups: dict[str, list[SourceFile]] = {}
+    for source in sources:
+        if source.requirement == "one_of" and source.group:
+            groups.setdefault(source.group, []).append(source)
+    for group, members in groups.items():
+        if not any((dest / member.name).exists() for member in members):
+            missing.append(f"one_of:{group}")
     if missing:
         return FetchReport(
             dataset_id=ds or dataset_id,

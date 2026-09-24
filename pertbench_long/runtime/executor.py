@@ -35,7 +35,7 @@ def normalize_digest(value: str | None) -> str | None:
     return text
 
 
-def isolation_is_qualified(*, mode: str, backend: str, resolved_digest: str | None, attestation_digest: str | None) -> bool:
+def image_is_pinned(*, mode: str, backend: str, resolved_digest: str | None, attestation_digest: str | None) -> bool:
     if mode != "isolated_eval" or backend != "docker":
         return False
     got = normalize_digest(resolved_digest)
@@ -43,6 +43,30 @@ def isolation_is_qualified(*, mode: str, backend: str, resolved_digest: str | No
     if not got or not want:
         return False
     return got == want
+
+
+def isolation_is_qualified(
+    *,
+    mode: str,
+    backend: str,
+    resolved_digest: str | None,
+    attestation_digest: str | None,
+    acceptance_report: dict | None = None,
+) -> bool:
+    """Digest equality only pins the image. Qualification needs a passing acceptance report."""
+    if not image_is_pinned(mode=mode, backend=backend, resolved_digest=resolved_digest, attestation_digest=attestation_digest):
+        return False
+    if not acceptance_report or acceptance_report.get("status") != "passed":
+        return False
+    if acceptance_report.get("report_version") != "isolation_acceptance_v1":
+        return False
+    if normalize_digest(acceptance_report.get("image_digest")) != normalize_digest(resolved_digest):
+        return False
+    if acceptance_report.get("mount_policy") != "declared_public_v1":
+        return False
+    tests = acceptance_report.get("tests") or {}
+    required = {"public_read", "public_readonly", "host_sentinel_unreadable", "unpurchased_unreadable", "no_network"}
+    return all(tests.get(name) == "passed" for name in required)
 
 
 def _decode_tail(raw: bytes) -> str:
@@ -224,13 +248,20 @@ class DockerPythonExecutor(PythonExecutor):
             raise IsolationUnavailable("isolated_eval requires Docker; this host cannot isolate tool code")
         self.resolved_digest = self._resolve_digest(image)
         self.run_reference = self.resolved_digest or image
-        self.isolation_qualified = isolation_is_qualified(
+        self.image_pinned = image_is_pinned(
             mode=mode,
             backend="docker",
             resolved_digest=self.resolved_digest,
             attestation_digest=required_digest,
         )
-        if required_digest and not self.isolation_qualified:
+        self.isolation_qualified = isolation_is_qualified(
+            mode=mode,
+            backend="docker",
+            resolved_digest=self.resolved_digest,
+            attestation_digest=required_digest,
+            acceptance_report=None,
+        )
+        if required_digest and not self.image_pinned:
             raise IsolationUnavailable("analysis image digest does not match runtime.isolation_attestation.digest")
         if workspace_gib:
             self.isolation_qualified = False
@@ -279,13 +310,34 @@ class DockerPythonExecutor(PythonExecutor):
             f"type=bind,src={cwd / 'evidence'},dst=/workspace/evidence,readonly",
             "--mount",
             f"type=bind,src={cwd / 'outputs'},dst=/workspace/outputs",
-            "--mount",
-            f"type=bind,src={cwd / 'episode.json'},dst=/workspace/episode.json,readonly",
         ]
-        for name in ("genes_v1.tsv", "submission_contract.json"):
+        names = [
+            "episode.json",
+            "genes_v1.tsv",
+            "gene_panel.tsv",
+            "submission_contract.json",
+            "task.md",
+            "conditions.parquet",
+            "targets.parquet",
+            "reference_mapping.json",
+        ]
+        episode = cwd / "episode.json"
+        if episode.exists():
+            try:
+                import json
+
+                from pertbench_long.runtime.release import declared_public_relative_paths
+                from pertbench_long.schemas.validate import validate_public_payload
+
+                spec = validate_public_payload(json.loads(episode.read_text(encoding="utf-8")))
+                names = [rel for rel in declared_public_relative_paths(spec) if not rel.startswith("evidence/")]
+            except Exception:
+                pass
+        for name in names:
             src = cwd / name
-            if src.exists():
-                mounts.extend(["--mount", f"type=bind,src={src},dst=/workspace/{name},readonly"])
+            if not src.exists() or src.is_symlink():
+                continue
+            mounts.extend(["--mount", f"type=bind,src={src},dst=/workspace/{name},readonly"])
         return mounts
 
     def run_python(self, code: str, *, timeout_s: int, cwd: Path, extra_env: dict[str, str] | None = None) -> dict[str, Any]:

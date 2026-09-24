@@ -411,15 +411,39 @@ def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -
     matrix_cfg = dict(cfg.get("matrix") or {})
     kind = matrix_cfg.get("matrix_kind") or cfg.get("matrix_kind")
     layer = matrix_cfg.get("layer")
+    matrix_name = str(matrix_cfg.get("file") or "matrix.h5ad")
+    if not (data_path / matrix_name).exists():
+        raise ConfigError(f"matrix.file does not exist: {data_path / matrix_name}")
     manifest = resolve_relative(cfg.get("source_manifest") or cfg.get("manifest"), config_path=config_path)
+    split_manifest = None
+    if cfg.get("split_manifest"):
+        split_path = resolve_relative(cfg.get("split_manifest"), config_path=config_path)
+        if split_path is None or not split_path.exists():
+            raise ConfigError(f"split_manifest does not exist: {cfg.get('split_manifest')}")
+        split_manifest = json.loads(split_path.read_text(encoding="utf-8"))
+    development = list(cfg.get("development_episodes") or [])
+    if split_manifest and split_manifest.get("development_episodes"):
+        development.extend(split_manifest["development_episodes"])
     if adapter == "sciplex":
         from pertbench_long.data.adapters.sciplex import import_sciplex
 
-        store = import_sciplex(data_path, manifest_path=manifest, declared_matrix_kind=kind, matrix_layer=layer)
+        store = import_sciplex(
+            data_path,
+            manifest_path=manifest,
+            declared_matrix_kind=kind,
+            matrix_layer=layer,
+            matrix_filename=matrix_name,
+        )
     elif adapter == "norman":
         from pertbench_long.data.adapters.norman import import_norman
 
-        store = import_norman(data_path, manifest_path=manifest, declared_matrix_kind=kind, matrix_layer=layer)
+        store = import_norman(
+            data_path,
+            manifest_path=manifest,
+            declared_matrix_kind=kind,
+            matrix_layer=layer,
+            matrix_filename=matrix_name,
+        )
     else:
         raise ConfigError(f"unsupported adapter {adapter}")
     episode_id = str(cfg.get("episode_id") or f"{dataset}_pilot_0001")
@@ -438,11 +462,25 @@ def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -
         "resource_profile": cfg.get("resource_profile", "long_cpu_v1"),
         "requested_track": cfg.get("requested_track", "pilot"),
         "data_release_id": cfg.get("data_release_id", "local_unreleased"),
-        "provenance_verified": bool(matrix_cfg.get("require_verified_provenance") and manifest),
-        "source_verified": bool((data_path / "provenance.json").exists()),
-        "scoring_scale_hash": cfg.get("scoring_scale_hash"),
+        "reference_policy": cfg.get("reference_policy", "matched_vehicle_v1" if protocol != PROTOCOL_GENETIC_PAIR else "matched_ntc_v1"),
+        "label_estimand": cfg.get("label_estimand", "auto"),
+        "development_episodes": development or None,
         "study_name": cfg.get("study") or dataset,
     }
+    if cfg.get("requested_track") == "official":
+        from pertbench_long.episodes.evidence import verify_official_evidence
+
+        scale_path = resolve_relative(cfg.get("scoring_scale") or cfg.get("scoring_calibration"), config_path=config_path)
+        common["evidence"] = verify_official_evidence(
+            data_path,
+            calibration_path=scale_path,
+            a_family=float(cfg.get("a_family", 0.5)),
+            label_profile="lognorm_cellmean_delta_v1",
+            split_manifest=split_manifest,
+            declared_scale_hash=cfg.get("scoring_scale_hash"),
+        )
+        common["data_release_id"] = cfg.get("data_release_id")
+    resolved_path = dest / episode_id / "resolved_build_config.json"
     if protocol == PROTOCOL_CHEMICAL_DOSE:
         from pertbench_long.episodes.builders.chemical_dose import build_chemical_dose_episode
 
@@ -470,6 +508,12 @@ def _cmd_build_real(args: argparse.Namespace, cfg: dict[str, Any], dest: Path) -
         raise ConfigError(f"protocol {protocol} is not a real-data build target")
     if result.get("synthetic"):
         raise ConfigError("real-data build produced a synthetic episode; refusing")
+    from pertbench_long.hashes import sha256_json
+
+    resolved_payload = {"config": cfg, "episode_id": episode_id, "matrix_file": matrix_name}
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_path.write_text(json.dumps(resolved_payload, indent=2, default=str), encoding="utf-8")
+    result["resolved_build_config_sha256"] = sha256_json(resolved_payload)
     print(json.dumps(result, indent=2, default=str))
     return EXIT_OK
 
@@ -507,7 +551,12 @@ def _cmd_doctor_data(args: argparse.Namespace) -> int:
     cfg = validate_build_config(_load_yaml(Path(args.config))) if args.config else {}
     dataset = _pick(args.dataset, cfg.get("dataset"), name="dataset", required=True)
     data_root = _pick(args.data_root, cfg.get("data_root"), name="data_root")
-    report = doctor_data(dataset=dataset, data_root=data_root)
+    report = doctor_data(
+        dataset=dataset,
+        data_root=data_root,
+        min_candidates=int(cfg.get("min_candidates", 24)),
+        min_targets=int(cfg.get("min_targets", 8)),
+    )
     print(json.dumps(report, indent=2, default=str))
     return EXIT_OK if report.get("status") == STATUS_READY_PILOT else EXIT_CONFIG
 

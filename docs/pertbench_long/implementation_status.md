@@ -135,8 +135,24 @@ Per-item audit mapping: `docs/pertbench_long/review_fix_status.md`.
 
 ## Tests
 
-`python -m pytest tests/pertbench_long -q` after the readiness fixes: **96 passed, 6 skipped**.  
-Skipped items are live model / Docker isolation paths (`not_run`).
+## Release-readiness revision (2026-09-24 review of d9cd784)
+
+| Item | Status | Evidence |
+|---|---|---|
+| M01 source lock | blocked | manifests record `source_lock.status=blocked`; no guessed GEO URL or hash |
+| M02 optional / profile | implemented / CPU | optional `guides.csv` does not block fetch; csv and h5ad both present without a profile is an error |
+| M03 prepare semantics | implemented / CPU | scaled/negative inputs fail before a counts label is written; sparse reads stay sparse |
+| M04 official evidence | implemented / CPU | config flags and empty provenance cannot set `scoring_track=official` |
+| M05 config consumption | implemented / CPU | unknown estimand/policy rejected; missing matrix/split fail; dev O overlapping eval T fails |
+| M06 doctor-data | implemented / CPU | empty QC, unreadable matrix, and control-only tables are blocked |
+| M07 vehicle / replicates | implemented / CPU | explicit control must match time and vehicle; replicate key includes batch |
+| M08 Docker mounts | implemented / CPU plan | declared public files are in the mount plan; container run is not_run |
+| M09 isolation report | implemented / CPU | matching digest is `image_pinned` only; `scripts/isolation_acceptance.py` writes `not_run` without a container suite |
+| M10 live templates | implemented / not_run | `run_sciplex_dose.yaml`, `run_norman_pair.yaml`, `run_sciplex_context.yaml` |
+| M11 required jobs | implemented | `PERTBENCH_REQUIRE_LIVE=1` or `PERTBENCH_REQUIRE_DOCKER=1` fails instead of skipping |
+| M12 official release | blocked | no frozen GEO release; pilot remains the only real-data track |
+
+`python -m pytest tests/pertbench_long -q` after this revision exited 0. Live model and Docker boundary runs remain `not_run` skips, not passes.
 
 ## Not executed / not claimed
 

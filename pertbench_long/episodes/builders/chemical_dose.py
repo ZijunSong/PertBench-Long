@@ -128,6 +128,8 @@ def build_chemical_dose_episode(
     provenance_verified: bool = False,
     source_verified: bool = False,
     scoring_scale_hash: str | None = None,
+    evidence: dict | None = None,
+    reference_policy: str = "matched_vehicle_v1",
     development_episodes: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     roles = assign_dose_roles(
@@ -165,6 +167,8 @@ def build_chemical_dose_episode(
         provenance_verified=provenance_verified,
         source_verified=source_verified,
         scoring_scale_hash=scoring_scale_hash,
+        evidence=evidence,
+        reference_policy=reference_policy,
         development_episodes=development_episodes,
         seed=seed,
         resource_profile=resource_profile,

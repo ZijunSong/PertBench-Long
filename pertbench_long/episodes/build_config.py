@@ -48,6 +48,9 @@ KNOWN_BUILD_FIELDS = frozenset(
         "label_estimand",
         "a_family",
         "scoring_scale_hash",
+        "scoring_scale",
+        "scoring_calibration",
+        "input_profile",
         "synthetic",
         "development_episodes",
         "processing_history",
@@ -60,9 +63,17 @@ KNOWN_BUILD_FIELDS = frozenset(
 KNOWN_MATRIX_FIELDS = frozenset({"file", "layer", "matrix_kind", "require_verified_provenance"})
 
 
+ALLOWED_ESTIMANDS = frozenset({"auto", "replicate_equal_weight", "cell_weighted_descriptive", "donor_equal_weight"})
+ALLOWED_REFERENCE_POLICIES = frozenset({"matched_vehicle_v1", "matched_ntc_v1", "target_control_available_v1"})
+ALLOWED_TRACKS = frozenset({"pilot", "diagnostic", "official"})
+
+
 def expand_env(value: Any) -> Any:
     if isinstance(value, str):
-        return os.path.expandvars(value)
+        expanded = os.path.expandvars(value)
+        if "${" in expanded:
+            raise ConfigError(f"unresolved environment variable in {value!r}")
+        return expanded
     if isinstance(value, list):
         return [expand_env(item) for item in value]
     if isinstance(value, dict):
@@ -82,6 +93,15 @@ def validate_build_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
         extra = sorted(set(matrix) - KNOWN_MATRIX_FIELDS)
         if extra:
             raise ConfigError(f"unknown matrix fields: {extra}")
+    estimand = payload.get("label_estimand")
+    if estimand is not None and estimand not in ALLOWED_ESTIMANDS:
+        raise ConfigError(f"unknown label_estimand {estimand!r}")
+    policy = payload.get("reference_policy")
+    if policy is not None and policy not in ALLOWED_REFERENCE_POLICIES:
+        raise ConfigError(f"unknown reference_policy {policy!r}")
+    track = payload.get("requested_track")
+    if track is not None and track not in ALLOWED_TRACKS:
+        raise ConfigError(f"unknown requested_track {track!r}")
     return payload
 
 

@@ -29,6 +29,7 @@ DEFAULT_ALIASES = {
     "control": "is_control",
     "dose_unit": "dose_unit",
     "time_unit": "time_unit",
+    "vehicle": "vehicle",
 }
 
 

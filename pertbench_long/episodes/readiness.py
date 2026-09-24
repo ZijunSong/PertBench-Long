@@ -21,8 +21,10 @@ def resolve_scoring_eligibility(
     split_audited: bool = False,
     labels_validated: bool = False,
     scoring_scale_hash: str | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return track/readiness. not-synthetic + counts is never enough for official."""
+    """Return track/readiness. Caller booleans cannot grant official."""
+    checked = dict(evidence or {})
     if matrix_kind in {"unknown", "scaled"}:
         track = "diagnostic"
     elif synthetic:
@@ -31,20 +33,29 @@ def resolve_scoring_eligibility(
         missing = []
         if str(data_release_id or "") in UNRELEASED_RELEASE_IDS:
             missing.append("frozen_data_release_id")
-        if not provenance_verified:
+        if not checked.get("ok"):
+            missing.append("verified_release_evidence")
+        if not checked.get("provenance_verified"):
             missing.append("verified_provenance")
-        if not source_verified:
-            missing.append("source_verified")
-        if not split_audited:
+        if not checked.get("source_verified"):
+            missing.append("source_lock")
+        if not checked.get("split_audited"):
             missing.append("split_audited")
-        if not labels_validated:
+        if not checked.get("labels_validated"):
             missing.append("labels_validated")
+        if not checked.get("scoring_scale_hash"):
+            missing.append("scoring_calibration_artifact")
         if missing:
             raise UnsupportedProfile(
                 "official track requires frozen release evidence; "
-                f"missing={missing}; local_unreleased cannot be official"
+                f"missing={missing}; a config flag or empty provenance cannot grant official"
             )
         track = "official"
+        provenance_verified = True
+        source_verified = True
+        split_audited = True
+        labels_validated = True
+        scoring_scale_hash = str(checked["scoring_scale_hash"])
     else:
         track = "pilot"
 
@@ -52,9 +63,11 @@ def resolve_scoring_eligibility(
     if not synthetic and str(data_release_id or "") in UNRELEASED_RELEASE_IDS:
         readiness = "pilot"
 
-    scale_source = "declared_fixed_scale" if scoring_scale_hash else "fixture_default_not_calibrated"
-    if track == "official" and not scoring_scale_hash:
-        raise UnsupportedProfile("official continuous scoring requires a frozen scoring_scale_hash")
+    if track == "official":
+        scale_source = str((evidence or {}).get("scale_source") or "frozen_calibration_artifact")
+    else:
+        scale_source = "fixture_default_not_calibrated"
+        scoring_scale_hash = None
 
     return {
         "scoring_track": track,
